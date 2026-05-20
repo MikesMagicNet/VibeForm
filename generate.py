@@ -70,7 +70,7 @@ def loadTrainedModel(vocabPath, checkpointPath, device):
     return model, tokenizer
 
 
-def generate(model, tokenizer, prompt, maxTokens=40, device="cpu"):
+def generate(model, tokenizer, prompt, maxTokens=256, device="cpu"):
     """
     Generates text by feeding a prompt through the encoder, then having
     the decoder predict one token at a time (autoregressive generation).
@@ -168,14 +168,14 @@ def interactive(model, tokenizer, device):
             print("  Goodbye!")
             break
 
-        output = generate(model, tokenizer, prompt, maxTokens=40, device=device)
+        output = generate(model, tokenizer, prompt, maxTokens=256, device=device)
         print(f"  Model: {output}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Generate text with trained Transformer")
     parser.add_argument("--prompt", type=str, default=None, help="Single prompt to generate from")
-    parser.add_argument("--max-tokens", type=int, default=40, help="Max tokens to generate")
+    parser.add_argument("--max-tokens", type=int, default=256, help="Max tokens to generate")
     parser.add_argument("--checkpoint", type=str, default=CHECKPOINT_PATH)
     parser.add_argument("--vocab", type=str, default=VOCAB_PATH)
     args = parser.parse_args()
@@ -204,7 +204,7 @@ def main():
     model, tokenizer = loadTrainedModel(args.vocab, args.checkpoint, device)
 
     if args.prompt:
-        output = generate(model, tokenizer, args.prompt, args.max_tokens, device=str(device))
+        output = generate(model, tokenizer, args.prompt, args.max_tokens, device=device)
         print(f"\n  Prompt:    {args.prompt}")
         print(f"  Generated: {output}")
     else:

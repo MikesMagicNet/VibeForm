@@ -59,28 +59,36 @@ SPECIAL_TOKENS = [PAD_TOKEN, UNK_TOKEN, SOS_TOKEN, EOS_TOKEN]
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TOKENIZATION HELPER  – splitting raw text into a list of words
+#
+#  Aligned for DPO conversational data (tungdqzenai/grok_humanlike_dpo):
+#    - Preserves underscores, hyphens (common in code + reasoning)
+#    - Keeps common punctuation (.,!?;:) as individual tokens
+#    - Keeps numbers intact
+#    - Handles prompt/chosen/rejected conversational text
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def tokenize(text):
     """
-    Splits a raw string into a list of lowercase word tokens.
+    Splits a raw string into lowercase tokens, tuned for DPO conversational
+    data where punctuation carries meaning in dialogue.
 
-    Steps:
-      1. Lowercase everything         → "The Cat!" becomes "the cat!"
-      2. Keep only letters, digits,    → strips punctuation like ! , . " etc.
-         and spaces
-      3. Split on whitespace           → "the cat" becomes ["the", "cat"]
+    Keeps: letters, digits, underscores, hyphens (within words)
+    Keeps: common punctuation as standalone tokens (.,!?;:-)
+    Drops: rare symbols that add noise
 
     Args:
-        text (str): Any raw string, e.g. a Wikipedia article.
+        text (str): Raw input string.
 
     Returns:
-        list[str]: Individual word tokens.
-                   Example: ["the", "cat", "sat", "on", "the", "mat"]
+        list[str]: Word tokens.
     """
-    text = text.lower()                          # ... normalize case
-    text = re.sub(r"[^a-z0-9\s]", "", text)      # ... remove non-alphanumeric chars
-    tokens = text.split()                         # ... split on whitespace into words
+    text = text.lower()
+    # Separate punctuation from words but keep word-internal hyphens/underscores
+    text = re.sub(r"([^\w\s\-])", r" \1 ", text)
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    # Keep alphanumeric + underscore + hyphen tokens, AND common punctuation
+    tokens = [t for t in text.split() if re.match(r"^[\w\-]+$", t) or t in ".,!?;:"]
     return tokens
 
 
@@ -487,51 +495,141 @@ def loadWikipediaDataset(language="en", date="20231101", numArticles=50000):
 
 def loadClaudeOpusDataset(datasetName="Roman1111111/claude-opus-4.6-10000x", numRows=9633):
     """
-    Loads the Claude Opus 4.6 reasoning dataset from HuggingFace.
-    
-    This dataset has conversational format with reasoning traces:
-      - Each row has 'messages': [{role, content, reasoning?}, ...]
-      - We extract all text (user question + assistant answer + reasoning)
-        and combine it into a single string for each row.
+    Loads a dataset from HuggingFace, supporting multiple formats including DPO.
 
-    This teaches the model structured reasoning patterns:
-      question → thinking → answer
+    For DPO datasets (prompt/chosen/rejected):
+      Returns list of (prompt, response) tuples for encoder→decoder training.
+
+    For messages or plain text datasets:
+      Returns list of strings (flat text).
 
     Args:
         datasetName (str): HuggingFace dataset identifier.
-        numRows (int):     How many rows to load (max 9,633).
+        numRows (int):     How many rows to load.
 
     Returns:
-        list[str]: Extracted text from each conversation.
+        list[tuple[str,str]] or list[str]: Training data.
     """
     print(f"Loading dataset: {datasetName}")
     print(f"  Requesting {numRows:,} rows...")
 
-    dataset = load_dataset(datasetName, split="train", streaming=True)
+    try:
+        dataset = load_dataset(datasetName, split="train", streaming=True)
+    except (RuntimeError, ConnectionError, OSError) as e:
+        print(f"\n  ❌ Failed to connect to HuggingFace Hub: {type(e).__name__}")
+        print(f"     Check your internet connection and try again.")
+        print(f"     Dataset: {datasetName}")
+        raise SystemExit(1)
 
     texts = []
+    schema_type = None
+
     for i, row in enumerate(dataset):
         if i >= numRows:
             break
 
-        # Extract all text from the conversation messages
-        parts = []
-        for msg in row.get("messages", []):
-            content = msg.get("content", "")
-            reasoning = msg.get("reasoning", "")
-            if content:
-                parts.append(content)
-            if reasoning:
-                parts.append(reasoning)
+        if schema_type is None:
+            if "messages" in row:
+                schema_type = "messages"
+            elif "instruction" in row and "output" in row:
+                schema_type = "alpaca"
+            elif "chosen" in row or "prompt" in row:
+                schema_type = "dpo"
+            elif "question" in row and ("answer" in row or "prediction" in row or "gold" in row or "extracted_answer" in row):
+                schema_type = "math"
+            elif "text" in row:
+                schema_type = "text"
+            else:
+                schema_type = "fallback"
+            print(f"  Detected schema: {schema_type}")
 
-        if parts:
-            texts.append(" ".join(parts))
+        if schema_type == "messages":
+            parts = []
+            for msg in row.get("messages", []):
+                content = msg.get("content", "")
+                reasoning = msg.get("reasoning", "")
+                if content:
+                    parts.append(content)
+                if reasoning:
+                    parts.append(reasoning)
+            if parts:
+                texts.append(" ".join(parts))
+
+        elif schema_type == "alpaca":
+            instruction = row.get("instruction", "")
+            input_text = row.get("input", "")
+            prompt = f"{instruction} {input_text}".strip() if input_text else instruction
+            output = row.get("output", "")
+            if prompt and output:
+                texts.append((prompt, output))
+
+        elif schema_type == "dpo":
+            # Extract prompt
+            prompt = row.get("prompt", "")
+            if isinstance(prompt, list):
+                prompt = " ".join(
+                    m.get("content", "") for m in prompt if isinstance(m, dict)
+                )
+            # Extract chosen response (the preferred answer)
+            chosen = row.get("chosen", "")
+            if isinstance(chosen, list):
+                chosen = " ".join(
+                    m.get("content", "") for m in chosen if isinstance(m, dict)
+                )
+            if prompt and chosen:
+                texts.append((prompt, chosen))
+
+        elif schema_type == "math":
+            prompt = str(row.get("question", ""))
+            output = str(row.get("prediction", "") or row.get("answer", "") or row.get("extracted_answer", "") or row.get("gold", ""))
+            if prompt and output:
+                texts.append((prompt, output))
+
+        elif schema_type == "text":
+            text = row.get("text", "")
+            if text:
+                texts.append(text)
+
+        else: # fallback
+            parts = []
+            for key, val in row.items():
+                if isinstance(val, str):
+                    parts.append(val)
+                elif isinstance(val, list):
+                    for item in val:
+                        if isinstance(item, dict):
+                            if "content" in item:
+                                parts.append(str(item["content"]))
+                            elif "value" in item:
+                                parts.append(str(item["value"]))
+            if parts:
+                texts.append(" ".join(parts))
 
         if (i + 1) % 2000 == 0:
             print(f"  Loaded {i + 1:,} rows...")
 
     print(f"  Done! Loaded {len(texts):,} rows.\n")
     return texts
+
+
+def extractTextsForVocab(data):
+    """
+    Flattens training data (either list of strings or list of tuples) into
+    a flat list of strings suitable for vocabulary building.
+
+    Args:
+        data: Output from loadClaudeOpusDataset — either list[str] or list[tuple[str,str]].
+
+    Returns:
+        list[str]: Flat list of text strings.
+    """
+    flat = []
+    for item in data:
+        if isinstance(item, (list, tuple)):
+            flat.extend(item)  # unpack (prompt, response)
+        else:
+            flat.append(item)
+    return flat
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -571,7 +669,7 @@ if __name__ == "__main__":
         print("=" * 60)
 
         tokenizer = WordTokenizer(minFrequency=MIN_FREQ)
-        tokenizer.buildVocab(texts)
+        tokenizer.buildVocab(extractTextsForVocab(texts))
 
         # ── Step 3: Save vocabulary ───────────────────────────────────────────
         print("=" * 60)

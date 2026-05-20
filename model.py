@@ -83,7 +83,7 @@ class MultiHeadAttentionBlock(nn.Module): # 3.2.2 Multi-Head Attention (Unknown 
       attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
 
       if mask is not None:
-          attention_scores.masked_fill_(mask == 0, -1e9)
+          attention_scores.masked_fill_(mask == 0, -1e4)
       attention_scores = attention_scores.softmax(dim = -1)
       if dropout is not None:
           attention_scores = dropout(attention_scores)
@@ -233,10 +233,26 @@ def buildTransformer(source_vocabSize: int, target_vocabSize: int, source_sequen
 
     #Create the transformer block
     transformer = TransformerBlock(encoder, decoder, sourceEmbed, sourcePosition, targetEmbed, targetPosition, projectionLayer)
-    
-    # Init parameters 
+
+    # ── Weight Tying ─────────────────────────────────────────────────────
+    # Share embedding weights: source embed = target embed = projection
+    # Reduces param count by ~vocabSize × dModel and regularizes learning.
+    # Standard in GPT-2, BERT, T5, etc.
+    transformer.targetEmbed.embedding.weight = transformer.sourceEmbed.embedding.weight
+    transformer.projectLayer.proj.weight = transformer.sourceEmbed.embedding.weight
+
+    # ── Xavier Uniform Init ──────────────────────────────────────────────
     for p in transformer.parameters():
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
+
+    # ── GPT-2 Scaled Residual Init ───────────────────────────────────────
+    # For Pre-LN Transformers, residual paths accumulate variance across
+    # N layers. Scale output projections by 1/√(2N) to stabilize training.
+    residualScale = 0.02 / math.sqrt(2 * N)
+    for name, p in transformer.named_parameters():
+        if name.endswith('w_o.weight') or name.endswith('linearTwo.weight'):
+            nn.init.normal_(p, mean=0.0, std=residualScale)
+
     return transformer
         

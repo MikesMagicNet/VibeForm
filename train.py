@@ -1,10 +1,7 @@
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  train.py  –  Training & Validation Loop + Live Dashboard                  ║
-# ║                                                                            ║
-# ║  HOW TO RUN:                                                               ║
-# ║    python3 train.py                                                        ║
-# ║    Then open http://localhost:8080 in your browser for the live dashboard.  ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
+# train.py — Training & Validation Loop
+#
+# Run training:    python3 train.py
+# Run dashboard:   python3 dashboard.py   (separate process)
 
 import torch
 import torch.nn as nn
@@ -12,16 +9,19 @@ import math
 import os
 import json
 import time
-import threading
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+try:
+    import psutil
+except ImportError:
+    psutil = None
+import resource
 from torch.utils.data import Dataset, DataLoader
 
 from model import buildTransformer
-from tokenizer import WordTokenizer, tokenize, loadWikipediaDataset, loadClaudeOpusDataset
+from tokenizer import WordTokenizer, tokenize, loadWikipediaDataset, loadClaudeOpusDataset, extractTextsForVocab
 from config import MODEL, TRAINING, DATA, PATHS, RESUME, DASHBOARD
+from autotuner import ActiveConfigMatcher
 
-# ── BUILD RUNTIME CONFIG from config.py ───────────────────────────────────────
-# ... Flattened for easy access throughout this file.
+# Flatten config for easy access
 CONFIG = {
     **MODEL,
     "epochs": TRAINING["epochs"],
@@ -32,57 +32,78 @@ CONFIG = {
     "labelSmoothing": TRAINING["labelSmoothing"],
     "gradClipNorm": TRAINING["gradClipNorm"],
     "logInterval": TRAINING.get("logInterval", 25),
+    "accumSteps": TRAINING.get("accumSteps", 1),
     "numArticles": DATA["numArticles"],
     "valSplit": DATA["valSplit"],
     "vocabPath": PATHS["vocab"],
     "metricsPath": PATHS["metrics"],
     "checkpointPath": PATHS["checkpoint"],
     "dashboardPort": DASHBOARD["port"],
-    "totalSteps": 0,  # ... computed at runtime
+    "totalSteps": 0,
 }
 
-# ── SPECIAL TOKEN IDS ─────────────────────────────────────────────────────────
-PAD_ID = 0  # ... <PAD>
-UNK_ID = 1  # ... <UNK>
-SOS_ID = 2  # ... <SOS>
-EOS_ID = 3  # ... <EOS>
+PAD_ID = 0
+UNK_ID = 1
+SOS_ID = 2
+EOS_ID = 3
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  DATASET  –  Turns Wikipedia text into (source, target) training pairs
+#  DATASET — Converts text into (encoder, decoder) training pairs
+#
+#  Supports two modes:
+#    1. DPO pairs:     list of (prompt, response) tuples  → encoder=prompt, decoder=response
+#    2. Plain text:    list of strings  → sliding-window split into src/tgt halves
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class WikiTextDataset(Dataset):
+class TransformerDataset(Dataset):
     """
-    Converts raw Wikipedia articles into training samples for the Transformer.
+    Builds encoder/decoder training pairs.
 
-    Each sample is a pair:
-        encoder_input  =  first half of a text chunk   (what the model reads)
-        decoder_input  =  [SOS] + second half[:-1]     (teacher forcing input)
-        label          =  second half[:-1] + [EOS]     (what decoder must predict)
+    If `texts` contains (prompt, response) tuples:
+      encoder_input = tokenized prompt (truncated/padded to seqLength)
+      decoder_input = [SOS] + tokenized response[:-1]
+      label         = tokenized response[:-1] + [EOS]
 
-    The encoder sees context, the decoder learns to continue it.
+    If `texts` contains plain strings:
+      Uses a sliding window split in half (legacy mode for Wikipedia, etc.).
     """
 
     def __init__(self, texts, tokenizer, seqLength):
         self.tokenizer = tokenizer
         self.seqLength = seqLength
-        self.samples = []  # ... list of (encoder_ids, target_ids) tuples
+        self.samples = []
 
-        for text in texts:
-            # Tokenize text → list of word strings → list of integer IDs
-            words = tokenize(text)
-            unkId = tokenizer.word2id.get("<UNK>", UNK_ID)
-            ids = [tokenizer.word2id.get(w, unkId) for w in words]
+        unkId = tokenizer.word2id.get("<UNK>", UNK_ID)
 
-            # Slide a window across the article, creating training pairs
-            # ... each window is 2*seqLength tokens long
-            # ... first half → encoder, second half → decoder
-            windowSize = seqLength * 2
-            for i in range(0, len(ids) - windowSize, seqLength):
-                src = ids[i : i + seqLength]
-                tgt = ids[i + seqLength : i + windowSize]
+        # Detect mode: list of tuples (prompt, response) vs list of strings
+        if texts and isinstance(texts[0], (list, tuple)) and len(texts[0]) == 2:
+            # ── DPO pair mode ─────────────────────────────────────────────
+            for prompt, response in texts:
+                srcWords = tokenize(prompt)
+                tgtWords = tokenize(response)
+                if not srcWords or not tgtWords:
+                    continue
+                src = [tokenizer.word2id.get(w, unkId) for w in srcWords]
+                tgt = [tokenizer.word2id.get(w, unkId) for w in tgtWords]
+                # Truncate to seqLength
+                src = src[:seqLength]
+                tgt = tgt[:seqLength - 1]  # leave room for SOS/EOS
+                # Pad source to seqLength
+                src = src + [PAD_ID] * (seqLength - len(src))
+                # Pad target to seqLength - 1
+                tgt = tgt + [PAD_ID] * (seqLength - 1 - len(tgt))
                 self.samples.append((src, tgt))
+        else:
+            # ── Sliding window mode (plain text) ──────────────────────────
+            for text in texts:
+                words = tokenize(text)
+                ids = [tokenizer.word2id.get(w, unkId) for w in words]
+                windowSize = seqLength * 2
+                for i in range(0, len(ids) - windowSize, seqLength):
+                    src = ids[i : i + seqLength]
+                    tgt = ids[i + seqLength : i + windowSize]
+                    self.samples.append((src, tgt))
 
         print(f"  Created {len(self.samples):,} training samples "
               f"from {len(texts):,} articles")
@@ -92,79 +113,51 @@ class WikiTextDataset(Dataset):
 
     def __getitem__(self, idx):
         src_ids, tgt_ids = self.samples[idx]
-        sl = self.seqLength  # ... shorthand
+        sl = self.seqLength
 
-        # ── Build encoder input (what the encoder reads) ──────────────────
-        # Shape: (seqLength,)
         encoder_input = torch.tensor(src_ids[:sl], dtype=torch.long)
+        decoder_input = torch.tensor([SOS_ID] + tgt_ids[:sl - 1], dtype=torch.long)
+        label = torch.tensor(tgt_ids[:sl - 1] + [EOS_ID], dtype=torch.long)
 
-        # ── Build decoder input (teacher forcing: shifted right) ──────────
-        # [SOS, tok1, tok2, ..., tok_{sl-2}]  → length = seqLength
-        decoder_input = torch.tensor(
-            [SOS_ID] + tgt_ids[:sl - 1], dtype=torch.long
-        )
-
-        # ── Build label (what the decoder should output) ──────────────────
-        # [tok1, tok2, ..., tok_{sl-1}, EOS]  → length = seqLength
-        label = torch.tensor(
-            tgt_ids[:sl - 1] + [EOS_ID], dtype=torch.long
-        )
-
-        # ── Build masks ───────────────────────────────────────────────────
-        # Encoder mask: 1 where NOT padding, 0 where padding
-        # ... shape (1, 1, seqLength) — broadcasts over (batch, heads, query, key)
+        # Masks: encoder pads + decoder causal mask
         encoder_mask = (encoder_input != PAD_ID).unsqueeze(0).unsqueeze(0).int()
-
-        # Decoder mask: causal (can only see past tokens) AND not padding
-        # ... shape (1, seqLength, seqLength)
         decoder_padding = (decoder_input != PAD_ID).unsqueeze(0).int()
-        # ... causal_mask[i][j] = 1 if j <= i (can attend to current + past)
         causal_mask = torch.tril(torch.ones(sl, sl, dtype=torch.int))
-        decoder_mask = decoder_padding & causal_mask  # ... combine both
+        decoder_mask = decoder_padding & causal_mask
 
         return {
-            "encoder_input": encoder_input,    # (seqLength,)
-            "decoder_input": decoder_input,    # (seqLength,)
-            "encoder_mask": encoder_mask,      # (1, 1, seqLength)
-            "decoder_mask": decoder_mask.unsqueeze(0),  # (1, seqLength, seqLength)
-            "label": label,                    # (seqLength,)
+            "encoder_input": encoder_input,
+            "decoder_input": decoder_input,
+            "encoder_mask": encoder_mask,
+            "decoder_mask": decoder_mask.unsqueeze(0),
+            "label": label,
         }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  LEARNING RATE SCHEDULER  –  Cosine annealing with linear warmup
+#  LEARNING RATE — Cosine annealing with linear warmup
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def getLearningRate(step, maxLR, minLR, warmupSteps, totalSteps):
     """
-    Cosine annealing with linear warmup — much more stable than the paper's
-    inverse-sqrt schedule, especially for small models.
-
     Phase 1 (warmup):  LR climbs linearly from 0 → maxLR
     Phase 2 (decay):   LR follows a cosine curve from maxLR → minLR
-
-    This prevents the LR from crashing too fast (the old schedule's problem)
-    and gives the model a smooth, predictable learning rate throughout training.
     """
     if step < warmupSteps:
-        # ... linear warmup: 0 → maxLR over warmupSteps
         return maxLR * (step / max(warmupSteps, 1))
-    else:
-        # ... cosine decay: maxLR → minLR over remaining steps
-        progress = (step - warmupSteps) / max(totalSteps - warmupSteps, 1)
-        progress = min(progress, 1.0)  # ... clamp to [0, 1]
-        return minLR + (maxLR - minLR) * 0.5 * (1.0 + math.cos(math.pi * progress))
+    progress = (step - warmupSteps) / max(totalSteps - warmupSteps, 1)
+    progress = min(progress, 1.0)
+    return minLR + (maxLR - minLR) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  METRICS TRACKER  –  Records everything the dashboard needs
+#  METRICS TRACKER — Feeds data to the dashboard
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class MetricsTracker:
-    """Collects training stats and saves them to a JSON file for the dashboard."""
-
     def __init__(self, config, metricsPath):
         self.path = metricsPath
+        self.startTime = time.time()
         self.data = {
             "config": config,
             "status": "initializing",
@@ -173,23 +166,27 @@ class MetricsTracker:
             "currentBatch": 0,
             "totalBatches": 0,
             "globalStep": 0,
-            "trainLosses": [],        # ... loss each batch
-            "smoothedLoss": [],       # ... exponential moving avg of loss
-            "valLosses": [],          # ... avg loss each epoch
-            "learningRates": [],      # ... lr each batch
-            "gradNorms": [],          # ... gradient L2 norm each batch
-            "trainAccuracies": [],    # ... token accuracy each batch
-            "epochTrainLosses": [],   # ... avg train loss each epoch
-            "epochValAccuracies": [], # ... token accuracy each epoch
-            "perplexities": [],       # ... e^loss each epoch
-            "attentionWeights": [],   # ... 2D list for heatmap
-            "attentionSrcTokens": [], # ... token labels for heatmap x-axis
-            "attentionTgtTokens": [], # ... token labels for heatmap y-axis
-            "predictions": [],        # ... sample outputs
-            "embeddingNodes": [],     # ... [{word, x, y}, ...] for word map
-            "embeddingEdges": [],     # ... [[i,j], ...] nearest-neighbor links
+            "trainLosses": [],
+            "smoothedLoss": [],
+            "valLosses": [],
+            "learningRates": [],
+            "gradNorms": [],
+            "trainAccuracies": [],
+            "epochTrainLosses": [],
+            "epochValAccuracies": [],
+            "perplexities": [],
+            "attentionWeights": [],
+            "attentionSrcTokens": [],
+            "attentionTgtTokens": [],
+            "predictions": [],
+            "embeddingNodes": [],
+            "embeddingEdges": [],
             "tokensPerSecond": 0,
             "elapsedSeconds": 0,
+            "modelParams": 0,
+            "batchTime": 0,
+            "memoryUsage": 0,
+            "attnEntropy": 0,
         }
         self.save()
 
@@ -197,141 +194,153 @@ class MetricsTracker:
         self.data.update(kwargs)
 
     def save(self):
-        """Write metrics to disk so the dashboard can read them."""
         try:
             with open(self.path, "w") as f:
                 json.dump(self.data, f)
         except Exception:
-            pass  # ... don't crash training if file write fails
+            pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  TRAINING LOOP  –  One epoch of training
+#  TRAINING LOOP — One epoch
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def trainOneEpoch(model, dataloader, optimizer, criterion, device, metrics, epoch):
-    """
-    Runs one full pass through the training data.
-
-    For each batch:
-      1. Feed encoder_input through the encoder  → context vectors
-      2. Feed decoder_input + context through the decoder → predictions
-      3. Compare predictions to labels using CrossEntropyLoss
-      4. Backpropagate the error and update weights
-    """
-    model.train()  # ... enable dropout, batch norm, etc.
+def trainOneEpoch(model, dataloader, optimizer, criterion, device, tokenizer, metrics, epoch, tuner=None):
+    model.train()
     totalLoss = 0
     batchCount = len(dataloader)
     startTime = time.time()
     tokenCount = 0
+    accumSteps = CONFIG.get("accumSteps", 1)
+
+    # Determine autocast dtype for MPS / CUDA / CPU
+    useMPS = (device.type == "mps")
+    useCUDA = (device.type == "cuda")
+    castDevice = "mps" if useMPS else ("cuda" if useCUDA else "cpu")
+    castDtype = torch.float16 if (useMPS or useCUDA) else torch.bfloat16
+
+    optimizer.zero_grad()  # zero once; accumulate across micro-batches
 
     for batchIdx, batch in enumerate(dataloader):
-        # Move data to the right device (CPU or GPU)
-        enc_input = batch["encoder_input"].to(device)   # (B, seqLen)
-        dec_input = batch["decoder_input"].to(device)   # (B, seqLen)
-        enc_mask = batch["encoder_mask"].to(device)      # (B, 1, 1, seqLen)
-        dec_mask = batch["decoder_mask"].to(device)      # (B, 1, seqLen, seqLen)
-        label = batch["label"].to(device)                # (B, seqLen)
+        enc_input = batch["encoder_input"].to(device)
+        dec_input = batch["decoder_input"].to(device)
+        enc_mask = batch["encoder_mask"].to(device)
+        dec_mask = batch["decoder_mask"].to(device)
+        label = batch["label"].to(device)
 
-        # ── Forward pass ──────────────────────────────────────────────────
-        # Step 1: Encode the source sequence
-        encoderOut = model.encode(enc_input, enc_mask)
+        # Forward with mixed-precision autocast
+        with torch.autocast(device_type=castDevice, dtype=castDtype):
+            encoderOut = model.encode(enc_input, enc_mask)
+            decoderOut = model.decode(encoderOut, enc_mask, dec_input, dec_mask)
+            projOut = model.projection(decoderOut)
+            loss = criterion(projOut.view(-1, projOut.size(-1)), label.view(-1))
+            loss = loss / accumSteps  # scale loss for gradient accumulation
 
-        # Step 2: Decode using encoder output + decoder input
-        decoderOut = model.decode(encoderOut, enc_mask, dec_input, dec_mask)
+        loss.backward()
 
-        # Step 3: Project to vocabulary probabilities
-        projOut = model.projection(decoderOut)  # (B, seqLen, vocabSize)
+        # Step optimizer every accumSteps micro-batches
+        # Use tuner's effective grad clip if active, otherwise use config default
+        activeGradClip = tuner.effectiveGradClip if tuner else CONFIG["gradClipNorm"]
+        if (batchIdx + 1) % accumSteps == 0 or (batchIdx + 1) == batchCount:
+            gradNorm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=activeGradClip)
+            optimizer.step()
+            optimizer.zero_grad()
+        else:
+            gradNorm = torch.tensor(0.0)  # placeholder for non-step batches
 
-        # ── Compute loss ──────────────────────────────────────────────────
-        # Reshape for CrossEntropyLoss: (B*seqLen, vocabSize) vs (B*seqLen,)
-        loss = criterion(
-            projOut.view(-1, projOut.size(-1)),  # ... flatten predictions
-            label.view(-1)                       # ... flatten labels
-        )
-
-        # ── Backward pass ─────────────────────────────────────────────────
-        optimizer.zero_grad()  # ... clear old gradients
-        loss.backward()        # ... compute new gradients
-
-        # Measure gradient norm BEFORE clipping (diagnostic metric)
-        # ... if this number explodes, training is unstable
-        gradNorm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=CONFIG["gradClipNorm"])
-        optimizer.step()       # ... update weights
-
-        # ── Update learning rate (cosine annealing with warmup) ───────────
+        # Update learning rate (cosine schedule + tuner scaling)
         globalStep = metrics.data["globalStep"] + 1
-        lr = getLearningRate(
-            globalStep,
-            CONFIG["maxLR"], CONFIG["minLR"],
-            CONFIG["warmupSteps"], CONFIG["totalSteps"]
-        )
+        lr = getLearningRate(globalStep, CONFIG["maxLR"], CONFIG["minLR"],
+                            CONFIG["warmupSteps"], CONFIG["totalSteps"])
+        if tuner:
+            lr = tuner.scaleLR(lr)
         for paramGroup in optimizer.param_groups:
             paramGroup["lr"] = lr
 
-        # ── Compute token accuracy ────────────────────────────────────────
-        # ... what % of predicted tokens exactly match the label?
-        predicted = projOut.argmax(dim=-1)        # (B, seqLen)
-        nonPadMask = (label != PAD_ID)             # ignore <PAD> positions
-        correct = (predicted == label) & nonPadMask
-        accuracy = correct.sum().item() / max(nonPadMask.sum().item(), 1)
+        # Token accuracy (ignoring PAD positions)
+        with torch.no_grad():
+            predicted = projOut.argmax(dim=-1)
+            nonPadMask = (label != PAD_ID)
+            correct = (predicted == label) & nonPadMask
+            accuracy = correct.sum().item() / max(nonPadMask.sum().item(), 1)
 
-        # ── Track metrics ─────────────────────────────────────────────────
-        batchLoss = loss.item()
+        # Track metrics (unscale loss for logging)
+        batchLoss = loss.item() * accumSteps
         totalLoss += batchLoss
         tokenCount += enc_input.numel()
-        elapsed = time.time() - startTime
-        tokPerSec = tokenCount / max(elapsed, 1)
+        elapsedTotal = time.time() - startTime
+        tokPerSec = tokenCount / max(elapsedTotal, 1)
 
-        # Exponential moving average of loss (smoothed trend line)
-        # ... alpha=0.05 means ~20-batch window, smooths out the noise
+        # Exponential moving average of loss
         prevSmoothed = metrics.data["smoothedLoss"]
-        if prevSmoothed:
-            ema = 0.95 * prevSmoothed[-1] + 0.05 * batchLoss
-        else:
-            ema = batchLoss
+        ema = 0.95 * prevSmoothed[-1] + 0.05 * batchLoss if prevSmoothed else batchLoss
 
-        metrics.update(
-            currentBatch=batchIdx + 1,
-            totalBatches=batchCount,
-            globalStep=globalStep,
-            tokensPerSecond=round(tokPerSec),
-            status="training",
-        )
         metrics.data["trainLosses"].append(round(batchLoss, 4))
         metrics.data["smoothedLoss"].append(round(ema, 4))
         metrics.data["learningRates"].append(round(lr, 8))
         metrics.data["gradNorms"].append(round(gradNorm.item(), 4))
         metrics.data["trainAccuracies"].append(round(accuracy, 4))
 
-        # Save metrics every 5 batches so dashboard stays responsive
+        # ── Auto-tuner: analyze and adjust ────────────────────────────────
+        if tuner:
+            tunerAdj = tuner.step(batchIdx, batchLoss, gradNorm.item(), accuracy, lr, metrics.data)
+            # If tuner adjusted label smoothing, rebuild criterion
+            if "labelSmoothing" in tunerAdj:
+                criterion.label_smoothing = tuner.effectiveLabelSmoothing
+            # If tuner adjusted dropout, apply it live to the model
+            if "dropout" in tunerAdj:
+                import torch.nn as nn
+                for m in model.modules():
+                    if isinstance(m, nn.Dropout):
+                        m.p = tuner.effectiveDropout
+
+        # Periodic dashboard + console update
         if (batchIdx + 1) % CONFIG["logInterval"] == 0 or batchIdx == batchCount - 1:
+            if psutil:
+                mem = psutil.Process().memory_info().rss / (1024**3)
+            else:
+                mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**3)  # bytes → GB on macOS
+
+            captureAttention(model, enc_input, dec_input, tokenizer, metrics)
+            capturePredictions(projOut, enc_input, label, tokenizer, metrics)
+
+            # Capture embeddings once per epoch (first log interval of each epoch)
+            if batchIdx + 1 == CONFIG["logInterval"]:
+                captureEmbeddings(model, tokenizer, metrics)
+
+            metrics.update(
+                currentBatch=batchIdx + 1,
+                totalBatches=batchCount,
+                globalStep=globalStep,
+                tokensPerSecond=round(tokPerSec),
+                status="training",
+                memoryUsage=mem,
+                elapsedSeconds=int(time.time() - metrics.startTime),
+                batchTime=elapsedTotal / (batchIdx + 1)
+            )
             metrics.save()
             print(f"  Epoch {epoch+1} | Batch {batchIdx+1}/{batchCount} "
                   f"| Loss: {batchLoss:.4f} | LR: {lr:.6f} "
                   f"| {tokPerSec:,.0f} tok/s")
+        else:
+            metrics.update(currentBatch=batchIdx + 1, totalBatches=batchCount, globalStep=globalStep)
 
-    avgLoss = totalLoss / max(batchCount, 1)
-    return avgLoss
+    return totalLoss / max(batchCount, 1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  VALIDATION LOOP  –  Evaluate without updating weights
+#  VALIDATION LOOP
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def validate(model, dataloader, criterion, device, tokenizer, metrics):
-    """
-    Runs the model on validation data WITHOUT updating weights.
-    Also captures attention weights and sample predictions for the dashboard.
-    """
-    model.eval()  # ... disable dropout
+    model.eval()
     totalLoss = 0
     totalCorrect = 0
     totalTokens = 0
     batchCount = len(dataloader)
 
-    with torch.no_grad():  # ... don't compute gradients (saves memory + speed)
-        for batchIdx, batch in enumerate(dataloader):
+    with torch.no_grad():
+        for batch in dataloader:
             enc_input = batch["encoder_input"].to(device)
             dec_input = batch["decoder_input"].to(device)
             enc_mask = batch["encoder_mask"].to(device)
@@ -342,23 +351,13 @@ def validate(model, dataloader, criterion, device, tokenizer, metrics):
             decoderOut = model.decode(encoderOut, enc_mask, dec_input, dec_mask)
             projOut = model.projection(decoderOut)
 
-            loss = criterion(
-                projOut.view(-1, projOut.size(-1)),
-                label.view(-1)
-            )
+            loss = criterion(projOut.view(-1, projOut.size(-1)), label.view(-1))
             totalLoss += loss.item()
 
-            # ── Token accuracy ────────────────────────────────────────────
             predicted = projOut.argmax(dim=-1)
             nonPadMask = (label != PAD_ID)
             totalCorrect += ((predicted == label) & nonPadMask).sum().item()
             totalTokens += nonPadMask.sum().item()
-
-            # ── Capture attention & predictions from the FIRST batch ──────
-            if batchIdx == 0:
-                captureAttention(model, enc_input, dec_input, tokenizer, metrics)
-                capturePredictions(projOut, enc_input, label, tokenizer, metrics)
-                captureEmbeddings(model, tokenizer, metrics)
 
     avgLoss = totalLoss / max(batchCount, 1)
     valAccuracy = totalCorrect / max(totalTokens, 1)
@@ -366,163 +365,121 @@ def validate(model, dataloader, criterion, device, tokenizer, metrics):
     return avgLoss
 
 
-def captureAttention(model, enc_input, dec_input, tokenizer, metrics):
-    """
-    Extracts attention weights from the first encoder layer for visualization.
-    The attention heatmap shows which input words the model focuses on.
-    """
-    try:
-        # Get attention from the first encoder layer, first sample in batch
-        attn = model.encoder.layers[0].selfAttentionBlock.attention_scores
-        # ... shape: (batch, heads, seqLen, seqLen)
-        attn = attn[0].mean(dim=0)  # ... average across heads → (seqLen, seqLen)
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TELEMETRY CAPTURES — attention, predictions, embeddings for dashboard
+# ═══════════════════════════════════════════════════════════════════════════════
 
-        # Only show the first 16 tokens for a readable heatmap
-        size = min(16, attn.size(0))
+def captureAttention(model, enc_input, dec_input, tokenizer, metrics):
+    """Extracts per-layer, per-head attention weights for the dashboard explorer."""
+    try:
+        # ── Per-layer per-head attention for the Attention Explorer tab ──
+        allLayerAttentions = []
+        perHeadEntropies = []
+        for layer in model.encoder.layers:
+            layerAttn = layer.selfAttentionBlock.attention_scores  # (B, h, S, S)
+            headAttn = layerAttn[0]  # first batch item: (h, S, S)
+            size = min(32, headAttn.size(-1))
+            headsList = []
+            for headIdx in range(headAttn.size(0)):
+                headSlice = headAttn[headIdx, :size, :size]
+                headsList.append([[round(v, 4) for v in row] for row in headSlice.cpu().tolist()])
+                # Per-head entropy
+                hEnt = -(headSlice * torch.log(headSlice + 1e-9)).sum(dim=-1).mean().item()
+                perHeadEntropies.append(round(hEnt, 4))
+            allLayerAttentions.append(headsList)
+
+        # ── Legacy: averaged heatmap from layer 0 (backward compat) ─────
+        attn = model.encoder.layers[0].selfAttentionBlock.attention_scores
+        attn = attn[0].mean(dim=0)  # average across heads
+        size = min(32, attn.size(0))
         attnSlice = attn[:size, :size].cpu().tolist()
 
-        # Get token labels for the axes
         srcIds = enc_input[0][:size].cpu().tolist()
         srcTokens = [tokenizer.id2word.get(i, "?") for i in srcIds]
+
+        # Global attention entropy
+        entropy = -(attn * torch.log(attn + 1e-9)).sum(dim=-1).mean().item()
 
         metrics.update(
             attentionWeights=[[round(v, 4) for v in row] for row in attnSlice],
             attentionSrcTokens=srcTokens,
-            attentionTgtTokens=srcTokens,  # ... self-attention: same tokens
+            attentionTgtTokens=srcTokens,
+            attnEntropy=entropy,
+            allLayerAttentions=allLayerAttentions,
+            perHeadEntropies=perHeadEntropies,
         )
-    except Exception:
-        pass  # ... attention may not be available on first call
-
-
-def capturePredictions(projOut, enc_input, label, tokenizer, metrics):
-    """
-    Grabs a few sample predictions to display on the dashboard so you can
-    see what the model is actually generating vs what it should generate.
-    """
-    # Get predicted token IDs (highest probability token at each position)
-    predicted = projOut.argmax(dim=-1)  # ... (batch, seqLen)
-
-    samples = []
-    numSamples = min(10, predicted.size(0))
-    for i in range(numSamples):
-        srcIds = enc_input[i].cpu().tolist()
-        lblIds = label[i].cpu().tolist()
-        predIds = predicted[i].cpu().tolist()
-
-        samples.append({
-            "source": tokenizer.decode(srcIds),
-            "target": tokenizer.decode(lblIds),
-            "predicted": tokenizer.decode(predIds),
-        })
-
-    metrics.update(predictions=samples)
-
-
-def captureEmbeddings(model, tokenizer, metrics, numWords=80, kNeighbors=3):
-    """
-    Projects the model's learned word embeddings into 2D for visualization.
-    This shows HOW the model organizes words internally — similar words
-    should cluster together as training progresses.
-
-    Steps:
-      1. Grab embedding vectors for the most common words
-      2. Project from dModel dimensions → 2D using PCA (SVD)
-      3. Find k nearest neighbors for each word (cosine similarity)
-      4. Send coordinates + connections to the dashboard
-    """
-    try:
-        # Get the embedding weight matrix: shape (vocabSize, dModel)
-        embMatrix = model.sourceEmbed.embedding.weight.detach().cpu()
-
-        # Pick the first numWords non-special tokens (IDs 4 onward)
-        # These are the most common words since they were added first
-        maxId = min(numWords + 4, embMatrix.size(0))
-        ids = list(range(4, maxId))  # ... skip PAD, UNK, SOS, EOS
-        subset = embMatrix[ids]       # ... (numWords, dModel)
-        words = [tokenizer.id2word.get(i, "?") for i in ids]
-
-        # ── PCA via SVD: project dModel dims → 2D ─────────────────────────
-        centered = subset - subset.mean(dim=0)   # ... center the data
-        U, S, V = torch.svd(centered)
-        coords = (centered @ V[:, :2]).tolist()   # ... project to 2D
-
-        # Normalize coordinates to [-1, 1] range for the canvas
-        xs = [c[0] for c in coords]
-        ys = [c[1] for c in coords]
-        xMin, xMax = min(xs), max(xs)
-        yMin, yMax = min(ys), max(ys)
-        xRange = max(xMax - xMin, 1e-6)
-        yRange = max(yMax - yMin, 1e-6)
-
-        nodes = []
-        for i, word in enumerate(words):
-            nx = (coords[i][0] - xMin) / xRange * 2 - 1  # ... map to [-1, 1]
-            ny = (coords[i][1] - yMin) / yRange * 2 - 1
-            nodes.append({"word": word, "x": round(nx, 4), "y": round(ny, 4)})
-
-        # ── Find k nearest neighbors (cosine similarity) ──────────────────
-        norms = subset.norm(dim=1, keepdim=True).clamp(min=1e-8)
-        normalized = subset / norms
-        similarity = normalized @ normalized.T  # ... (numWords, numWords)
-
-        edges = []
-        for i in range(len(ids)):
-            sim_row = similarity[i].clone()
-            sim_row[i] = -1  # ... exclude self
-            _, topk = sim_row.topk(kNeighbors)
-            for j in topk.tolist():
-                if [j, i] not in edges:  # ... avoid duplicate edges
-                    edges.append([i, j])
-
-        metrics.update(embeddingNodes=nodes, embeddingEdges=edges)
     except Exception:
         pass
 
 
+def capturePredictions(projOut, enc_input, label, tokenizer, metrics):
+    """Grabs sample predictions for the dashboard."""
+    predicted = projOut.argmax(dim=-1)
+    samples = []
+    for i in range(min(10, predicted.size(0))):
+        samples.append({
+            "source": tokenizer.decode(enc_input[i].cpu().tolist()),
+            "target": tokenizer.decode(label[i].cpu().tolist()),
+            "predicted": tokenizer.decode(predicted[i].cpu().tolist()),
+        })
+    metrics.update(predictions=samples)
+
+
+def captureEmbeddings(model, tokenizer, metrics, numWords=80, kNeighbors=3):
+    """Projects learned embeddings into 3D via PCA for the word-map visualization."""
+    try:
+        embMatrix = model.sourceEmbed.embedding.weight.detach().cpu()
+
+        maxId = min(numWords + 4, embMatrix.size(0))
+        ids = list(range(4, maxId))
+        subset = embMatrix[ids]
+        words = [tokenizer.id2word.get(i, "?") for i in ids]
+
+        # PCA via SVD → 3D
+        centered = subset - subset.mean(dim=0)
+        U, S, V = torch.svd(centered)
+        coords = (centered @ V[:, :3]).tolist()
+
+        # Normalize to [-1, 1]
+        xs, ys, zs = [c[0] for c in coords], [c[1] for c in coords], [c[2] for c in coords]
+        xMin, xMax = min(xs), max(xs)
+        yMin, yMax = min(ys), max(ys)
+        zMin, zMax = min(zs), max(zs)
+        xR = max(xMax - xMin, 1e-6)
+        yR = max(yMax - yMin, 1e-6)
+        zR = max(zMax - zMin, 1e-6)
+
+        nodes = []
+        for i, word in enumerate(words):
+            nx = (coords[i][0] - xMin) / xR * 2 - 1
+            ny = (coords[i][1] - yMin) / yR * 2 - 1
+            nz = (coords[i][2] - zMin) / zR * 2 - 1
+            nodes.append({"word": word, "x": round(nx, 4), "y": round(ny, 4), "z": round(nz, 4)})
+
+        # k nearest neighbors via cosine similarity
+        norms = subset.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        similarity = (subset / norms) @ (subset / norms).T
+
+        edges = []
+        for i in range(len(ids)):
+            sim_row = similarity[i].clone()
+            sim_row[i] = -1
+            _, topk = sim_row.topk(kNeighbors)
+            for j in topk.tolist():
+                if [j, i] not in edges:
+                    edges.append([i, j])
+
+        metrics.update(embeddingNodes=nodes, embeddingEdges=edges)
+        print(f"  📐 Captured {len(nodes)} embedding nodes for visualization")
+    except Exception as e:
+        print(f"  ⚠️  captureEmbeddings failed: {e}")
+
+
+
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-#  DASHBOARD SERVER  –  Serves the live HTML visualizer
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class DashboardHandler(SimpleHTTPRequestHandler):
-    """Custom HTTP handler that serves the dashboard and metrics API."""
-
-    def do_GET(self):
-        if self.path == "/" or self.path == "/index.html":
-            self.path = "/dashboard.html"
-        elif self.path == "/api/metrics":
-            self.sendMetrics()
-            return
-        return super().do_GET()
-
-    def sendMetrics(self):
-        """Serve the metrics JSON file as an API response."""
-        try:
-            with open(CONFIG["metricsPath"], "r") as f:
-                data = f.read()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(data.encode())
-        except Exception:
-            self.send_response(500)
-            self.end_headers()
-
-    def log_message(self, format, *args):
-        pass  # ... suppress console spam from HTTP requests
-
-
-def startDashboardServer(port):
-    """Launch the dashboard web server in a background thread."""
-    server = HTTPServer(("", port), DashboardHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    print(f"\n  🌐 Dashboard running at: http://localhost:{port}")
-    print(f"     Open this URL in your browser to see live training stats!\n")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  MAIN  –  Orchestrates everything
+#  MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
@@ -530,60 +487,48 @@ def main():
     print("  🧠 TRANSFORMER TRAINING")
     print("=" * 60)
 
-    # ── Device selection ──────────────────────────────────────────────────
-    # ... Use MPS (Apple Silicon GPU), CUDA (NVIDIA GPU), or CPU
+    # Device selection: MPS (Apple Silicon) > CUDA (NVIDIA) > CPU
     if torch.backends.mps.is_available():
         device = torch.device("mps")
-        print(f"  Device: Apple Silicon GPU (MPS)")
+        print("  Device: Apple Silicon GPU (MPS)")
     elif torch.cuda.is_available():
         device = torch.device("cuda")
-        print(f"  Device: NVIDIA GPU (CUDA)")
+        print("  Device: NVIDIA GPU (CUDA)")
     else:
         device = torch.device("cpu")
-        print(f"  Device: CPU (training will be slow)")
+        print("  Device: CPU (training will be slow)")
 
-    # ── Load tokenizer ────────────────────────────────────────────────────
+    # Load tokenizer
     print(f"\n  Loading tokenizer from {CONFIG['vocabPath']}...")
     tokenizer = WordTokenizer.load(CONFIG["vocabPath"])
 
-    # ── Load training data ─────────────────────────────────────────────────
+    # Run tokenizer self-check before training starts
+    tokenizer.selfCheck()
+
+    # Load data
     print(f"\n  Data source: {DATA['source']}")
     if DATA["source"] == "claude-opus":
-        print(f"  Loading {CONFIG['numArticles']:,} rows from Claude Opus dataset...")
-        texts = loadClaudeOpusDataset(
-            datasetName=DATA["claudeDataset"],
-            numRows=CONFIG["numArticles"],
-        )
+        print(f"  Loading {CONFIG['numArticles']:,} rows from DPO dataset...")
+        texts = loadClaudeOpusDataset(datasetName=DATA["claudeDataset"], numRows=CONFIG["numArticles"])
     else:
         print(f"  Loading {CONFIG['numArticles']:,} Wikipedia articles...")
         texts = loadWikipediaDataset(numArticles=CONFIG["numArticles"])
 
-    # ── Split into train / validation ─────────────────────────────────────
+    # Train/val split
     splitIdx = int(len(texts) * (1 - CONFIG["valSplit"]))
-    trainTexts = texts[:splitIdx]
-    valTexts = texts[splitIdx:]
-    print(f"  Train articles: {len(trainTexts):,}")
-    print(f"  Val articles:   {len(valTexts):,}")
+    trainTexts, valTexts = texts[:splitIdx], texts[splitIdx:]
+    print(f"  Train samples: {len(trainTexts):,}")
+    print(f"  Val samples:   {len(valTexts):,}")
 
-    # ── Create datasets and dataloaders ───────────────────────────────────
+    # Build datasets and dataloaders
     print(f"\n  Building training dataset...")
-    trainDataset = WikiTextDataset(trainTexts, tokenizer, CONFIG["seqLength"])
-    valDataset = WikiTextDataset(valTexts, tokenizer, CONFIG["seqLength"])
+    trainDataset = TransformerDataset(trainTexts, tokenizer, CONFIG["seqLength"])
+    valDataset = TransformerDataset(valTexts, tokenizer, CONFIG["seqLength"])
 
-    trainLoader = DataLoader(
-        trainDataset,
-        batch_size=CONFIG["batchSize"],
-        shuffle=True,   # ... randomize order each epoch
-        drop_last=True,  # ... skip incomplete last batch
-    )
-    valLoader = DataLoader(
-        valDataset,
-        batch_size=CONFIG["batchSize"],
-        shuffle=False,
-        drop_last=True,
-    )
+    trainLoader = DataLoader(trainDataset, batch_size=CONFIG["batchSize"], shuffle=True, drop_last=True)
+    valLoader = DataLoader(valDataset, batch_size=CONFIG["batchSize"], shuffle=False, drop_last=True)
 
-    # ── Build the Transformer ─────────────────────────────────────────────
+    # Build model
     print(f"\n  Building Transformer model...")
     model = buildTransformer(
         source_vocabSize=tokenizer.vocabSize,
@@ -597,57 +542,47 @@ def main():
         dropout=CONFIG["dropout"],
     ).to(device)
 
-    # Count total parameters
     paramCount = sum(p.numel() for p in model.parameters())
     print(f"  Model parameters: {paramCount:,}")
 
-    # ── Compute total training steps (needed for LR scheduler) ─────────
     CONFIG["totalSteps"] = len(trainLoader) * CONFIG["epochs"]
     print(f"  Total training steps: {CONFIG['totalSteps']:,}")
 
-    # ── Optimizer & Loss ──────────────────────────────────────────────────
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=CONFIG["maxLR"],
-        betas=(0.9, 0.98),   # ... from the paper
-        eps=1e-9,
-    )
-    # CrossEntropyLoss: compares predicted token probabilities vs actual tokens
-    # ... ignore_index=PAD_ID means we don't penalize predictions on <PAD> tokens
-    criterion = nn.CrossEntropyLoss(
-        ignore_index=PAD_ID,
-        label_smoothing=CONFIG["labelSmoothing"],
-    )
+    # Optimizer and loss
+    optimizer = torch.optim.Adam(model.parameters(), lr=CONFIG["maxLR"], betas=(0.9, 0.98), eps=1e-9)
+    criterion = nn.CrossEntropyLoss(ignore_index=PAD_ID, label_smoothing=CONFIG["labelSmoothing"])
 
-    # ── Fine-tune / Resume from checkpoint ─────────────────────────────────
-    # If a checkpoint exists, load the trained weights + optimizer state.
-    # This lets you:
-    #   - Continue training where you left off
-    #   - Fine-tune on new/different data
-    #   - Add more epochs on top of existing training
+    # Resume from checkpoint if available
     startEpoch = 0
     bestValLoss = float("inf")
     if RESUME["enabled"] and os.path.exists(CONFIG["checkpointPath"]):
-        print(f"\n  📂 Found existing checkpoint: {CONFIG['checkpointPath']}")
+        print(f"\n  📂 Found checkpoint: {CONFIG['checkpointPath']}")
         checkpoint = torch.load(CONFIG["checkpointPath"], map_location=device, weights_only=True)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        if RESUME["loadOptimizer"]:
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            print(f"  Loaded optimizer state (full resume mode)")
-        else:
-            print(f"  Fresh optimizer (fine-tune mode)")
-        startEpoch = checkpoint.get("epoch", 0) + 1
-        bestValLoss = checkpoint.get("val_loss", float("inf"))
-        print(f"  Resuming from epoch {startEpoch} (best val_loss={bestValLoss:.4f})")
-        print(f"  Training epochs {startEpoch+1} → {CONFIG['epochs']}")
+        try:
+            model.load_state_dict(checkpoint["model_state_dict"])
+            if RESUME["loadOptimizer"]:
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                print("  Loaded optimizer state (full resume)")
+            else:
+                print("  Fresh optimizer (fine-tune mode)")
+            startEpoch = checkpoint.get("epoch", 0) + 1
+            bestValLoss = checkpoint.get("val_loss", float("inf"))
+            print(f"  Resuming from epoch {startEpoch} (best val_loss={bestValLoss:.4f})")
+        except RuntimeError as e:
+            print(f"  ⚠️  Checkpoint architecture mismatch. Ignoring checkpoint and starting fresh.")
+            print(f"  🆕 Training from scratch.")
     else:
         print(f"\n  🆕 Training from scratch.")
 
-    # ── Metrics tracker ───────────────────────────────────────────────────
+    # Metrics (dashboard reads metrics.json from a separate process)
     metrics = MetricsTracker(CONFIG, CONFIG["metricsPath"])
+    metrics.update(modelParams=paramCount)
+    metrics.save()
+    print(f"\n  📊 Run 'python3 dashboard.py' in another terminal for live stats.")
 
-    # ── Start the live dashboard ──────────────────────────────────────────
-    startDashboardServer(CONFIG["dashboardPort"])
+    # ── Active Configuration Matcher (auto-tuner) ─────────────────────────
+    tuner = ActiveConfigMatcher(CONFIG, metrics, enabled=True)
+    print(f"  🔧 Auto-tuner enabled (monitoring gradients, loss, accuracy)")
 
     # ── Training loop ─────────────────────────────────────────────────────
     startTime = time.time()
@@ -660,20 +595,13 @@ def main():
         metrics.update(currentEpoch=epoch + 1, status="training")
         metrics.save()
 
-        # ── Train ─────────────────────────────────────────────────────────
-        avgTrainLoss = trainOneEpoch(
-            model, trainLoader, optimizer, criterion, device, metrics, epoch
-        )
+        avgTrainLoss = trainOneEpoch(model, trainLoader, optimizer, criterion, device, tokenizer, metrics, epoch, tuner=tuner)
 
-        # ── Validate ──────────────────────────────────────────────────────
         metrics.update(status="validating")
         metrics.save()
-        avgValLoss = validate(
-            model, valLoader, criterion, device, tokenizer, metrics
-        )
+        avgValLoss = validate(model, valLoader, criterion, device, tokenizer, metrics)
 
-        # ── Record epoch-level metrics ────────────────────────────────────
-        perplexity = math.exp(min(avgValLoss, 20))  # ... cap to avoid overflow
+        perplexity = math.exp(min(avgValLoss, 20))
         elapsed = time.time() - startTime
 
         metrics.data["epochTrainLosses"].append(round(avgTrainLoss, 4))
@@ -688,7 +616,6 @@ def main():
         print(f"     Perplexity:  {perplexity:.2f}")
         print(f"     Elapsed:     {elapsed/60:.1f} min")
 
-        # ── Save best checkpoint ──────────────────────────────────────────
         if avgValLoss < bestValLoss:
             bestValLoss = avgValLoss
             torch.save({
@@ -699,21 +626,18 @@ def main():
             }, CONFIG["checkpointPath"])
             print(f"     ✅ Best model saved! (val_loss={avgValLoss:.4f})")
 
-    # ── Done! ─────────────────────────────────────────────────────────────
+    # Post-training tokenizer diagnostics
+    tokenizer.diagnose()
+
+    # Auto-tuner summary
+    tuner.summary()
+
     metrics.update(status="complete")
     metrics.save()
     print(f"\n{'=' * 60}")
     print(f"  ✅ Training complete!")
-    print(f"  Dashboard still running at http://localhost:{CONFIG['dashboardPort']}")
-    print(f"  Press Ctrl+C to stop.")
+    print(f"  Final metrics saved to {CONFIG['metricsPath']}")
     print(f"{'=' * 60}")
-
-    # Keep the server running so user can inspect the dashboard
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\n  Server stopped.")
 
 
 if __name__ == "__main__":

@@ -13,12 +13,12 @@
 # ══════════════════════════════════════════════════════════════════════════════
 
 MODEL = {
-    "dModel": 200,      # ... embedding dimension (paper=512, smaller = faster)
-    "dFF": 512,         # ... feed-forward hidden size (paper=2048, typically 4x dModel)
-    "h": 4,             # ... number of attention heads (must divide dModel evenly)
+    "dModel": 256,      # ... embedding dimension (paper=512, smaller = faster)
+    "dFF": 1024,         # ... feed-forward hidden size (paper=2048, typically 4x dModel)
+    "h": 8,             # ... number of attention heads (must divide dModel evenly)
     "N": 4,             # ... number of encoder & decoder layers (paper=6, was 2)
     "dropout": 0.1,     # ... dropout probability (0.1 = drop 10% of connections)
-    "seqLength": 85,    # ... max tokens per sequence (longer for reasoning text)
+    "seqLength": 512,    # ... max tokens per sequence (longer for reasoning text)
 }
 
 
@@ -28,14 +28,15 @@ MODEL = {
 # ══════════════════════════════════════════════════════════════════════════════
 
 TRAINING = {
-    "epochs": 5,            # ... number of full passes through the data
-    "batchSize": 30,        # ... samples per training step
-    "maxLR": 4e-5,          # ... peak learning rate (lower for deeper model)
-    "minLR": 1e-3,          # ... floor learning rate (end of cosine decay)
+    "epochs": 50,            # ... number of full passes through the data
+    "batchSize": 10,        # ... samples per training step
+    "maxLR": 5e-4,          # ... peak learning rate (reached at end of warmup)
+    "minLR": 1e-5,          # ... floor learning rate (end of cosine decay)
     "warmupSteps": 500,     # ... more warmup for deeper model (prevents early instability)
-    "labelSmoothing": 0.1,  # ... prevents overconfidence (from the paper)
-    "gradClipNorm": 1.2,    # ... max gradient norm (prevents exploding gradients)
-    "logInterval": 10,      # ... print + save metrics every N batches (5=verbose, 25=normal, 100=quiet)
+    "labelSmoothing": 0.2,  # ... prevents overconfidence (from the paper)
+    "gradClipNorm": 1.1,    # ... max gradient norm (prevents exploding gradients)
+    "logInterval": 20,      # ... print + save metrics every N batches (5=verbose, 25=normal, 100=quiet)
+    "accumSteps": 4,        # ... gradient accumulation (effective batch = batchSize × accumSteps = 140)
 }
 
 
@@ -46,13 +47,13 @@ TRAINING = {
 
 DATA = {
     "source": "claude-opus",          # ... "wikipedia" or "claude-opus"
-    "numArticles": 7000,              # ... all rows for claude-opus (or article count for wiki)
+    "numArticles": 20000,              # ... cap to 20,000 for math problems
     "valSplit": 0.1,                  # ... fraction reserved for validation (0.1 = 10%)
     # Wikipedia settings (used when source = "wikipedia")
     "wikiDataset": "wikimedia/wikipedia",
     "wikiConfig": "20231101.en",
-    # Claude Opus settings (used when source = "claude-opus")
-    "claudeDataset": "angrygiraffe/claude-opus-4.6-4.7-reasoning-8.7k", #updated to more better data to see if we can improve the model
+    # HuggingFace dataset (used when source = "claude-opus")
+    "claudeDataset": "math-extraction-comp/deepseek-ai__deepseek-llm-67b-chat",
 }
 
 
@@ -62,8 +63,8 @@ DATA = {
 # ══════════════════════════════════════════════════════════════════════════════
 
 TOKENIZER = {
-    "minFrequency": 15,         # ... minimum word count (lower for smaller datasets)
-    "vocabArticles": 7000,      # ... rows to scan (use all Claude Opus data)
+    "minFrequency": 5,          # ... minimum word count (5 for 52k-row dataset)
+    "vocabArticles": 52000,     # ... rows to scan for vocabulary building
     "seqLengthForTest": 512,    # ... sequence length used during tokenizer test
 }
 
@@ -86,7 +87,7 @@ PATHS = {
 # ══════════════════════════════════════════════════════════════════════════════
 
 RESUME = {
-    "enabled": True,       # ... False = train from scratch with new dataset
+    "enabled": True,      # ... False = train from scratch with new dataset
                             # ... True = load checkpoint if it exists
                             # ... Set to False + delete checkpoint.pt for a clean start
 
