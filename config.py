@@ -3,7 +3,36 @@
 # ║                                                                            ║
 # ║  Edit this file to change anything about training, data, model size, etc.  ║
 # ║  Every other file imports from here — you never need to hunt for settings. ║
+# ║                                                                            ║
+# ║  SECURITY: All file paths are sanitized to prevent path traversal.         ║
+# ║  VALIDATION: Runtime checks ensure config values are sane before training. ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
+
+import os
+import sys
+
+# ── Path Security ─────────────────────────────────────────────────────────────
+# All paths are resolved relative to the project root and validated
+# to prevent path-traversal attacks (e.g., "../../etc/passwd").
+
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def _safe_path(relative_path: str) -> str:
+    """
+    Resolves a relative path against the project root and ensures
+    the result stays within the project directory.
+
+    Raises:
+        ValueError: If the resolved path escapes the project root.
+    """
+    resolved = os.path.normpath(os.path.join(_PROJECT_ROOT, relative_path))
+    if not resolved.startswith(_PROJECT_ROOT):
+        raise ValueError(
+            f"Path traversal detected: '{relative_path}' resolves to "
+            f"'{resolved}', which is outside the project root '{_PROJECT_ROOT}'."
+        )
+    return resolved
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -72,12 +101,13 @@ TOKENIZER = {
 # ══════════════════════════════════════════════════════════════════════════════
 #  PATHS
 #  Where files get saved. All relative to the project root.
+#  Paths are sanitized via _safe_path() to prevent path traversal.
 # ══════════════════════════════════════════════════════════════════════════════
 
 PATHS = {
-    "vocab": "vocab.json",            # ... tokenizer vocabulary
-    "checkpoint": "checkpoint.pt",    # ... trained model weights
-    "metrics": "metrics.json",        # ... dashboard metrics (auto-generated)
+    "vocab": _safe_path("vocab.json"),
+    "checkpoint": _safe_path("checkpoint.pt"),
+    "metrics": _safe_path("metrics.json"),
 }
 
 
@@ -104,3 +134,88 @@ DASHBOARD = {
     "port": 8080,           # ... http://localhost:8080
     "pollInterval": 2000,   # ... ms between metric updates
 }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  CONFIG VALIDATION
+#  Catches misconfigurations before they cause cryptic errors at runtime.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def validate_config():
+    """
+    Validates all configuration values and raises clear errors for
+    invalid settings. Call this at the start of train.py / generate.py.
+
+    Returns:
+        list[str]: Warning messages (non-fatal issues).
+
+    Raises:
+        ValueError: For invalid configuration values.
+    """
+    warnings = []
+
+    # ── Model validation ──────────────────────────────────────────────────
+    if MODEL["dModel"] % MODEL["h"] != 0:
+        raise ValueError(
+            f"dModel ({MODEL['dModel']}) must be divisible by h ({MODEL['h']}). "
+            f"Each attention head gets dModel/h = {MODEL['dModel']/MODEL['h']:.1f} dims."
+        )
+
+    if MODEL["dModel"] <= 0:
+        raise ValueError(f"dModel must be positive, got {MODEL['dModel']}")
+
+    if MODEL["dFF"] <= 0:
+        raise ValueError(f"dFF must be positive, got {MODEL['dFF']}")
+
+    if MODEL["N"] <= 0:
+        raise ValueError(f"N (num layers) must be positive, got {MODEL['N']}")
+
+    if not (0.0 <= MODEL["dropout"] < 1.0):
+        raise ValueError(f"dropout must be in [0, 1), got {MODEL['dropout']}")
+
+    if MODEL["seqLength"] <= 0:
+        raise ValueError(f"seqLength must be positive, got {MODEL['seqLength']}")
+
+    # ── Training validation ───────────────────────────────────────────────
+    if TRAINING["epochs"] <= 0:
+        raise ValueError(f"epochs must be positive, got {TRAINING['epochs']}")
+
+    if TRAINING["batchSize"] <= 0:
+        raise ValueError(f"batchSize must be positive, got {TRAINING['batchSize']}")
+
+    if TRAINING["maxLR"] <= 0:
+        raise ValueError(f"maxLR must be positive, got {TRAINING['maxLR']}")
+
+    if TRAINING["minLR"] < 0:
+        raise ValueError(f"minLR must be non-negative, got {TRAINING['minLR']}")
+
+    if TRAINING["minLR"] >= TRAINING["maxLR"]:
+        warnings.append(
+            f"minLR ({TRAINING['minLR']}) >= maxLR ({TRAINING['maxLR']}). "
+            f"Cosine decay will be flat."
+        )
+
+    if not (0.0 <= TRAINING["labelSmoothing"] < 1.0):
+        raise ValueError(f"labelSmoothing must be in [0, 1), got {TRAINING['labelSmoothing']}")
+
+    if TRAINING["gradClipNorm"] <= 0:
+        raise ValueError(f"gradClipNorm must be positive, got {TRAINING['gradClipNorm']}")
+
+    if TRAINING["accumSteps"] <= 0:
+        raise ValueError(f"accumSteps must be positive, got {TRAINING['accumSteps']}")
+
+    # ── Data validation ───────────────────────────────────────────────────
+    if DATA["source"] not in ("wikipedia", "claude-opus"):
+        raise ValueError(f"data source must be 'wikipedia' or 'claude-opus', got '{DATA['source']}'")
+
+    if not (0.0 < DATA["valSplit"] < 1.0):
+        raise ValueError(f"valSplit must be in (0, 1), got {DATA['valSplit']}")
+
+    if DATA["numArticles"] <= 0:
+        raise ValueError(f"numArticles must be positive, got {DATA['numArticles']}")
+
+    # ── Tokenizer validation ──────────────────────────────────────────────
+    if TOKENIZER["minFrequency"] <= 0:
+        raise ValueError(f"minFrequency must be positive, got {TOKENIZER['minFrequency']}")
+
+    return warnings

@@ -10,61 +10,104 @@
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
   :root {
-    --bg: #000000;
-    --surface: #0a0a0a;
-    --surface2: #111111;
-    --border: #1a1a1a;
-    --border-hi: #333333;
-    --text: #e5e5e5;
-    --muted: #737373;
-    --accent: #ffffff;
-    --success: #22c55e;
-    --danger: #ef4444;
-    --warning: #eab308;
+    --bg: #F5F5F5;               /* very light gray canvas */
+    --surface: #FFFFFF;          /* pure white cards */
+    --surface2: #FAFAFA;         /* subtle secondary surface */
+    --border: transparent;       /* no harsh borders */
+    --border-hi: transparent;
+    --text: #111827;             /* primary dark gray text */
+    --text-hi: #111827;          /* same for highlighted text */
+    --muted: #6B7280;            /* softer gray for secondary text */
+    --accent: #34D399;           /* soft mint green accent */
+    --success: #34D399;          /* success same as accent */
+    --success-text: #34D399;
+    --success-bg: rgba(52,211,153,0.1);
+    --danger: #EF4444;           /* keep red for danger */
+    --warning: #FBBF24;          /* warm amber for warnings */
+    --radius: 20px;              /* generous corner radius */
+    --radius-sm: 16px;           /* slightly smaller for metric boxes */
+    --shadow: 0 8px 24px rgba(0,0,0,0.06);   /* soft diffuse shadow */
+    --shadow-sm: 0 4px 12px rgba(0,0,0,0.04);
+    --glow: none;                /* no glow needed in minimal mode */
+    --chart-grid: rgba(0,0,0,0.04);   /* faint grid lines */
+    --chart-tick: #9CA3AF;       /* muted tick colour */
+    --tab-border: 3px;
+    --font-main: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
   
+  [data-theme="cloud"] {
+    --bg: #D2D6DC;
+    --surface: #EAEAEA;
+    --surface2: #F3F4F6;
+    --border: rgba(255, 255, 255, 0.45);
+    --border-hi: rgba(0, 0, 0, 0.1);
+    --text: #4B5563;
+    --text-hi: #1F2937;
+    --muted: #6B7280;
+    --accent: #3B82F6;
+    --success: #10B981;
+    --success-text: #065F46;
+    --success-bg: rgba(16, 185, 129, 0.1);
+    --danger: #EF4444;
+    --warning: #D97706;
+    --radius: 16px;
+    --radius-sm: 12px;
+    --shadow: 0 6px 16px rgba(0, 0, 0, 0.04);
+    --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.03);
+    --glow: inset 0 0 80px rgba(0, 102, 255, 0.25);
+    --chart-grid: rgba(0,0,0,0.04);
+    --chart-tick: #9CA3AF;
+    --tab-border: 3px;
+    --font-main: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   
   body {
-    font-family: 'Inter', -apple-system, sans-serif;
+    font-family: var(--font-main);
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
     -webkit-font-smoothing: antialiased;
+    box-shadow: var(--glow);
   }
   
   .bg-shape, .bg-shape2 { display: none; }
   
   .topbar {
     display: flex; justify-content: space-between; align-items: center;
-    padding: 12px 32px; background: var(--bg);
-    border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100;
+    padding: 20px 32px; background: var(--bg);
+    position: sticky; top: 0; z-index: 100;
+    box-shadow: inset 0 -1px 0 rgba(0,0,0,0.05);
   }
   .topbar-left { display: flex; align-items: center; gap: 12px; }
   .topbar-logo {
-    width: 28px; height: 28px; background: #fff; color: #000;
+    width: 36px; height: 36px; background: var(--accent); color: #fff;
     display: flex; align-items: center; justify-content: center;
-    font-weight: 700; font-size: 16px; font-family: 'JetBrains Mono', monospace;
+    font-weight: 700; font-size: 18px; font-family: 'JetBrains Mono', monospace;
+    border-radius: 12px;
   }
-  .topbar-title { font-size: 15px; font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase; color: #fff; }
+  .topbar-title { font-size: 16px; font-weight: 700; letter-spacing: 0.3px; text-transform: uppercase; color: var(--text); }
+  .topbar-subtitle { font-size: 13px; font-weight: 400; color: var(--muted); margin-top: 2px; }
   .status-pill {
-    display: flex; align-items: center; gap: 6px; padding: 4px 12px;
-    font-size: 12px; font-weight: 500; font-family: 'JetBrains Mono', monospace;
-    background: transparent; color: var(--success);
-    border: 1px solid var(--border);
+    display: flex; align-items: center; gap: 6px; padding: 6px 14px;
+    font-size: 12px; font-weight: 600; font-family: 'JetBrains Mono', monospace;
+    background: var(--success-bg); color: var(--success);
+    border: 1px solid rgba(16, 185, 129, 0.15);
+    border-radius: 9999px;
   }
+  .status-pill .dot { color: var(--success); }
   
   .tabs {
-    display: flex; gap: 0; padding: 0;
-    background: var(--bg); border-bottom: 1px solid var(--border);
+    display: flex; gap: 12px; padding: 0 32px;
+    background: transparent;
   }
   .tab {
-    padding: 10px 24px; font-size: 13px; font-weight: 500; color: var(--muted);
-    cursor: pointer; transition: color 0.15s; border-bottom: 2px solid transparent;
-    letter-spacing: 0.5px;
+    padding: 8px 20px; font-size: 14px; font-weight: 500; color: var(--muted);
+    cursor: pointer; transition: background 0.2s, color 0.15s;
+    border-radius: 9999px;
   }
-  .tab:hover { color: var(--text); }
-  .tab.active { color: #fff; border-bottom-color: #fff; }
+  .tab:hover { background: var(--surface2); color: var(--text); }
+  .tab.active { background: var(--surface); color: var(--text); font-weight: 600; }
   
   .container { max-width: 1400px; margin: 0 auto; padding: 24px 32px; }
   .tab-content { display: none; animation: fadeIn 0.2s ease forwards; }
@@ -72,10 +115,14 @@
   @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
   
   .card {
-    background: var(--surface); border: 1px solid var(--border); padding: 20px;
-    transition: border-color 0.2s;
+    background: var(--surface); border: none; padding: 32px;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(6px);
+    transition: transform 0.2s, box-shadow 0.2s;
   }
-  .card:hover { border-color: var(--border-hi); transform: none; }
+  .card:hover { transform: translateY(-2px); box-shadow: 0 12px 32px rgba(0,0,0,0.08); }
+  /* Removed duplicate hover rule */
   .card-header {
     font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase;
     letter-spacing: 1.5px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px;
@@ -83,23 +130,33 @@
   .card-header .icon { color: var(--muted); font-size: 14px; }
   
   .metrics-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 1px; margin-bottom: 24px; background: var(--border);
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 24px; margin-bottom: 32px; background: transparent;
   }
   .metric {
-    background: var(--surface); border: none;
-    padding: 14px 16px; position: relative; overflow: hidden; transition: background 0.2s;
+    background: var(--surface); border: none; padding: 20px;
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-sm);
+    transition: transform 0.2s;
   }
-  .metric:hover { background: var(--surface2); }
-  .metric::before { display: none; }
-  .metric-label { font-size: 10px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
-  .metric-value { font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 600; color: #fff; }
-  .metric-value.hi { color: #fff; text-shadow: none; }
+  .metric:hover { transform: translateY(-2px); }
+  .metric-label {
+    font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;
+  }
+  .metric-value {
+    font-family: 'JetBrains Mono', monospace; font-size: 28px; font-weight: 700; color: var(--text);
+  }
+  .metric-value.hi { color: var(--accent); }
+  .est-pill { display: block; width: 36px; height: 4px; border-radius: 2px; margin-top: 6px; background: var(--accent); }
   
-  .progress-container { background: var(--surface2); height: 3px; margin-bottom: 24px; overflow: hidden; border: none; }
-  .progress-bar { height: 100%; background: #fff; box-shadow: none; transition: width 0.5s linear; }
+  .progress-container {
+    background: var(--surface2); height: 4px; margin-bottom: 28px; overflow: hidden; border: none; border-radius: 4px;
+  }
+  .progress-bar {
+    height: 100%; background: var(--accent); transition: width 0.5s linear;
+  }
   
-  .layout-grid { display: grid; gap: 1px; margin-bottom: 1px; background: var(--border); }
+  .layout-grid { display: grid; gap: 24px; margin-bottom: 24px; background: transparent; }
   .col-2 { grid-template-columns: 1fr 1fr; }
   .col-3 { grid-template-columns: 1fr 1fr 1fr; }
   @media (max-width: 1024px) { .col-3 { grid-template-columns: 1fr 1fr; } }
@@ -108,7 +165,7 @@
   .sft-container { display: flex; flex-direction: column; gap: 8px; }
   .sft-item { background: var(--surface2); border: 1px solid var(--border); padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; }
   .sft-item:hover { border-color: var(--border-hi); transform: none; }
-  .sft-param { font-weight: 600; font-size: 13px; color: #fff; }
+  .sft-param { font-weight: 600; font-size: 13px; color: var(--text-hi); }
   .sft-action { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; font-family: 'JetBrains Mono', monospace; }
   .sft-reason { font-size: 12px; color: var(--muted); line-height: 1.4; }
   
@@ -118,8 +175,12 @@
   td { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--text); }
   tr:hover td { background: var(--surface2); }
   
-  .btn { background: transparent; color: var(--muted); border: 1px solid var(--border); padding: 4px 10px; font-family: 'JetBrains Mono', monospace; font-weight: 500; font-size: 12px; cursor: pointer; transition: all 0.15s; }
-  .btn:hover { color: #fff; border-color: var(--border-hi); background: var(--surface2); box-shadow: none; }
+  .btn {
+    background: var(--accent); color: #fff; border: none; padding: 8px 16px;
+    font-family: 'Inter', sans-serif; font-weight: 600; font-size: 13px; cursor: pointer;
+    border-radius: 12px; transition: background 0.2s, transform 0.2s;
+  }
+  .btn:hover { background: #2F9E80; transform: translateY(-1px); }
   
   .sample { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
   .sample:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
@@ -130,9 +191,9 @@
   .sample-text { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text); line-height: 1.6; max-height: 120px; overflow-y: auto; }
   
   .tok-input-row { display: flex; gap: 1px; margin-bottom: 16px; }
-  .tok-input-row input { flex: 1; background: var(--surface2); border: 1px solid var(--border); color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 13px; padding: 10px 14px; outline: none; transition: border-color 0.15s; }
-  .tok-input-row input:focus { border-color: #fff; }
-  .tok-input-row button { background: #fff; color: #000; border: none; padding: 10px 20px; font-family: 'Inter', sans-serif; font-weight: 600; font-size: 13px; cursor: pointer; box-shadow: none; transition: opacity 0.15s; }
+  .tok-input-row input { flex: 1; background: var(--surface2); border: 1px solid var(--border); color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 13px; padding: 10px 14px; outline: none; transition: border-color 0.15s; border-radius: var(--radius) 0 0 var(--radius); }
+  .tok-input-row input:focus { border-color: var(--text-hi); }
+  .tok-input-row button { background: var(--text-hi); color: var(--bg); border: none; padding: 10px 20px; font-family: 'Inter', sans-serif; font-weight: 600; font-size: 13px; cursor: pointer; box-shadow: none; transition: opacity 0.15s; border-radius: 0 var(--radius) var(--radius) 0; }
   .tok-input-row button:hover { opacity: 0.85; transform: none; }
   .tok-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
   .tok-chip { padding: 4px 8px; font-family: 'JetBrains Mono', monospace; font-size: 12px; border: 1px solid; cursor: default; }
@@ -148,12 +209,18 @@
   .cfg-badge { padding: 2px 6px; font-size: 10px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
   .cfg-badge.smaller { background: rgba(234,179,8,0.1); color: var(--warning); }
   .cfg-badge.match { background: rgba(34,197,94,0.1); color: var(--success); }
-  .cfg-badge.larger { background: rgba(255,255,255,0.08); color: #fff; }
+  .cfg-badge.larger { background: rgba(128,128,128,0.1); color: var(--text-hi); }
   .attn-controls { display: flex; gap: 12px; margin-bottom: 16px; align-items: center; }
-  .attn-controls select { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; font-family: 'JetBrains Mono', monospace; font-size: 12px; cursor: pointer; }
-  .attn-controls select:focus { border-color: #fff; outline: none; }
+  .attn-controls select { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; font-family: 'JetBrains Mono', monospace; font-size: 12px; cursor: pointer; border-radius: 4px; }
+  .attn-controls select:focus { border-color: var(--text-hi); outline: none; }
   .entropy-bar { display: flex; gap: 4px; align-items: center; }
   .entropy-pip { width: 6px; height: 20px; background: var(--border); transition: all 0.3s; }
+  .theme-option { display: flex; align-items: center; justify-content: space-between; padding: 16px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; margin-bottom: 12px; transition: border-color 0.2s; }
+  .theme-option:hover { border-color: var(--border-hi); }
+  .theme-option.active { border-color: var(--accent); }
+  .theme-name { font-weight: 600; font-size: 14px; }
+  .theme-preview { display: flex; gap: 8px; }
+  .color-dot { width: 16px; height: 16px; border-radius: 50%; border: 1px solid rgba(128,128,128,0.3); }
 </style>
 </head>
 <body>
@@ -165,7 +232,7 @@
     <div class="topbar-logo">T</div>
     <div>
       <div class="topbar-title">Transformer</div>
-      <div style="font-size: 13px; color: var(--muted);">Advanced Training Dashboard</div>
+      <div class="topbar-subtitle">Advanced Training Dashboard</div>
     </div>
   </div>
   <div class="status-pill" id="statusPill"><div class="dot">●</div><span id="statusText">Connecting</span></div>
@@ -177,6 +244,7 @@
   <div class="tab" onclick="switchTab('attention')">Attention Explorer</div>
   <div class="tab" onclick="switchTab('tokenizer')">Token Visualizer</div>
   <div class="tab" onclick="switchTab('embeddings')">Embedding Map</div>
+  <div class="tab" onclick="switchTab('settings')">Settings</div>
 </div>
 
 <div class="tab-content active" id="tab-training">
@@ -202,17 +270,17 @@
     <!-- Estimated Metrics & SFT Section -->
     <div class="layout-grid col-3">
       <div class="card" style="grid-column: span 2;">
-        <div class="card-header"><span class="icon">✦</span> Estimated Projections</div>
-        <div class="metrics-grid" style="margin-bottom: 0; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));">
-          <div class="metric"><div class="metric-label">Est. Final Loss</div><div class="metric-value" id="estLoss" style="color:var(--success)">–</div></div>
-          <div class="metric"><div class="metric-label">Est. Final Acc</div><div class="metric-value" id="estAcc" style="color:var(--accent)">–</div></div>
-          <div class="metric"><div class="metric-label">Est. Time Left</div><div class="metric-value" id="estTime" style="color:var(--warning)">–</div></div>
-          <div class="metric"><div class="metric-label">Est. Final PPL</div><div class="metric-value" id="estPpl" style="color:#60a5fa">–</div></div>
+        <div class="card-header"><span class="icon">✦</span> ESTIMATED PROJECTIONS</div>
+        <div class="metrics-grid" style="margin-bottom: 0; grid-template-columns: repeat(4, 1fr);">
+          <div class="metric"><div class="metric-label">Est. Final Loss</div><div class="metric-value" id="estLoss" style="color:var(--text-hi)">–</div><div class="est-pill" style="background:var(--success)"></div></div>
+          <div class="metric"><div class="metric-label">Est. Final Acc</div><div class="metric-value" id="estAcc" style="color:var(--text-hi)">–</div><div class="est-pill" style="background:var(--text-hi)"></div></div>
+          <div class="metric"><div class="metric-label">Est. Time Left</div><div class="metric-value" id="estTime" style="color:var(--text-hi)">–</div><div class="est-pill" style="background:var(--warning)"></div></div>
+          <div class="metric"><div class="metric-label">Est. Final PPL</div><div class="metric-value" id="estPpl" style="color:var(--text-hi)">–</div><div class="est-pill" style="background:var(--accent)"></div></div>
         </div>
       </div>
       <!-- Self-Fine-Tune Section -->
       <div class="card">
-        <div class="card-header"><span class="icon">⚡</span> Self-Fine-Tune Evaluation</div>
+        <div class="card-header"><span class="icon">⚡</span> SELF-FINE-TUNE EVALUATION</div>
         <div class="sft-container" id="sftContainer">
           <div style="font-size: 13px; color: var(--muted);">Analyzing metrics to prepare tuning recommendations...</div>
         </div>
@@ -220,17 +288,17 @@
     </div>
 
     <div class="layout-grid col-2">
-      <div class="card"><div class="card-header"><span class="icon">📈</span> Loss Track</div><canvas id="lossChart" height="150"></canvas></div>
-      <div class="card"><div class="card-header"><span class="icon">🎯</span> Token Accuracy</div><canvas id="accChart" height="150"></canvas></div>
+      <div class="card"><div class="card-header"><span class="icon">📈</span> LOSS TRACK</div><canvas id="lossChart" height="150"></canvas></div>
+      <div class="card"><div class="card-header"><span class="icon">🎯</span> TOKEN ACCURACY</div><canvas id="accChart" height="150"></canvas></div>
     </div>
     
     <div class="layout-grid col-2">
-      <div class="card"><div class="card-header"><span class="icon">📉</span> Perplexity</div><canvas id="pplChart" height="150"></canvas></div>
-      <div class="card"><div class="card-header"><span class="icon">🧠</span> Learning Rate</div><canvas id="lrChart" height="150"></canvas></div>
+      <div class="card"><div class="card-header"><span class="icon">📉</span> PERPLEXITY</div><canvas id="pplChart" height="150"></canvas></div>
+      <div class="card"><div class="card-header"><span class="icon">🧠</span> LEARNING RATE</div><canvas id="lrChart" height="150"></canvas></div>
     </div>
     
     <div class="layout-grid col-2">
-      <div class="card"><div class="card-header"><span class="icon">🌊</span> Gradient Norm</div><canvas id="gradChart" height="150"></canvas></div>
+      <div class="card"><div class="card-header"><span class="icon">🌊</span> GRADIENT NORM</div><canvas id="gradChart" height="150"></canvas></div>
       <div class="card">
         <div class="card-header">
           <span class="icon">💬</span> Sample Predictions
@@ -309,32 +377,80 @@
   </div>
 </div>
 
+<div class="tab-content" id="tab-settings">
+  <div class="container">
+    <div class="card" style="max-width: 600px; margin: 0 auto;">
+      <div class="card-header"><span class="icon">🎨</span> Theme Sets</div>
+      <p style="color: var(--muted); font-size: 13px; margin-bottom: 24px;">Select the visual theme for the dashboard interface.</p>
+      
+      <div class="theme-option active" id="theme-dark" onclick="setTheme('dark')">
+        <div class="theme-name">Dark Mode (SpaceX / OpenAI)</div>
+        <div class="theme-preview">
+          <div class="color-dot" style="background: #000000"></div>
+          <div class="color-dot" style="background: #0a0a0a"></div>
+          <div class="color-dot" style="background: #ffffff"></div>
+        </div>
+      </div>
+
+      <div class="theme-option" id="theme-cloud" onclick="setTheme('cloud')">
+        <div class="theme-name">Cloud Theme (Light)</div>
+        <div class="theme-preview">
+          <div class="color-dot" style="background: #eaeaea"></div>
+          <div class="color-dot" style="background: #f0f0f0"></div>
+          <div class="color-dot" style="background: #2196f3"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 function switchTab(name){
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
-  const tabs = ['training','config','attention','tokenizer','embeddings'];
+  const tabs = ['training','config','attention','tokenizer','embeddings','settings'];
   document.querySelector(`.tab:nth-child(${tabs.indexOf(name)+1})`).classList.add('active');
   document.getElementById('tab-'+name).classList.add('active');
   if(name==='tokenizer' && !document.getElementById('tokResult').innerHTML) runTokenize();
   if(name==='attention') drawExplorerHeatmap();
 }
 
-const G='rgba(255,255,255,0.04)', TK='rgba(255,255,255,0.4)';
-const base={responsive:true,animation:{duration:200},interaction:{mode:'index',intersect:false},plugins:{legend:{labels:{color:TK,font:{family:'JetBrains Mono',size:11},boxWidth:10,padding:12}},tooltip:{backgroundColor:'#111',bodyFont:{family:'JetBrains Mono',size:11},cornerRadius:0,padding:10,borderColor:'#333',borderWidth:1}},scales:{x:{grid:{color:G,drawTicks:false},ticks:{color:TK,maxTicksLimit:8,font:{size:10}},border:{color:'transparent'}},y:{grid:{color:G,drawTicks:false},ticks:{color:TK,font:{size:10}},border:{color:'transparent'}}}};
+const base={responsive:true,animation:{duration:200},interaction:{mode:'index',intersect:false},
+plugins:{
+  legend:{display:false},
+  tooltip:{backgroundColor:'var(--surface2)',titleColor:'var(--text-hi)',bodyColor:'var(--text)',bodyFont:{family:'JetBrains Mono',size:11},cornerRadius:4,padding:10,borderColor:'var(--border-hi)',borderWidth:1}
+},
+scales:{
+  x:{grid:{display:false},ticks:{color:()=>getComputedStyle(document.body).getPropertyValue('--chart-tick').trim(),maxTicksLimit:8,font:{size:10, family:'Inter', weight: 500}},border:{color:'transparent'}},
+  y:{grid:{color:()=>getComputedStyle(document.body).getPropertyValue('--chart-grid').trim(),drawTicks:false},ticks:{color:()=>getComputedStyle(document.body).getPropertyValue('--chart-tick').trim(),font:{size:10, family:'Inter', weight: 500}},border:{color:'transparent'}}
+}};
 function opts(){return JSON.parse(JSON.stringify(base));}
 
-const lossChart=new Chart(document.getElementById('lossChart'),{type:'line',data:{labels:[],datasets:[{label:'Raw',data:[],borderColor:'rgba(255,255,255,0.15)',borderWidth:1,pointRadius:0,fill:false,tension:.3},{label:'Smoothed',data:[],borderColor:'#fff',backgroundColor:'rgba(255,255,255,0.03)',borderWidth:1.5,pointRadius:0,fill:true,tension:.4},{label:'Val',data:[],borderColor:'#22c55e',borderWidth:1.5,pointRadius:2,pointBackgroundColor:'#22c55e',fill:false}]},options:opts()});
-const accChart=new Chart(document.getElementById('accChart'),{type:'line',data:{labels:[],datasets:[{label:'Train',data:[],borderColor:'rgba(255,255,255,0.15)',borderWidth:1,pointRadius:0,fill:false,tension:.3},{label:'Val',data:[],borderColor:'#22c55e',borderWidth:1.5,pointRadius:3,pointBackgroundColor:'#22c55e',fill:false}]},options:opts()});
-const pplChart=new Chart(document.getElementById('pplChart'),{type:'line',data:{labels:[],datasets:[{label:'Perplexity',data:[],borderColor:'#fff',backgroundColor:'rgba(255,255,255,0.03)',borderWidth:1.5,pointRadius:3,pointBackgroundColor:'#fff',fill:true,tension:.3}]},options:opts()});
-const lrChart=new Chart(document.getElementById('lrChart'),{type:'line',data:{labels:[],datasets:[{label:'Learning Rate',data:[],borderColor:'#eab308',backgroundColor:'rgba(234,179,8,0.05)',borderWidth:1.5,pointRadius:0,fill:true,tension:.3}]},options:opts()});
-const gradChart=new Chart(document.getElementById('gradChart'),{type:'line',data:{labels:[],datasets:[{label:'Grad Norm',data:[],borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,0.05)',borderWidth:1.5,pointRadius:0,fill:true,tension:.3}]},options:opts()});
+function getGradient(ctx, topColor, bottomColor) {
+  const chart = ctx.chart; const {ctx: canvasCtx, chartArea} = chart;
+  if (!chartArea) return null;
+  const gradient = canvasCtx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+  gradient.addColorStop(0, topColor);
+  gradient.addColorStop(1, bottomColor);
+  return gradient;
+}
+
+const lossChart=new Chart(document.getElementById('lossChart'),{type:'line',data:{labels:[],datasets:[{label:'Raw',data:[],borderColor:'rgba(128,128,128,0.25)',borderWidth:1.5,pointRadius:0,pointHoverRadius:0,fill:false,tension:.4},{label:'Smoothed',data:[],borderColor:'var(--danger)',backgroundColor:(ctx)=>getGradient(ctx, 'rgba(239, 68, 68, 0.15)', 'rgba(239, 68, 68, 0)'),borderWidth:2,pointRadius:0,pointHoverRadius:6,fill:true,tension:.4}]},options:opts()});
+const accChart=new Chart(document.getElementById('accChart'),{type:'line',data:{labels:[],datasets:[{label:'Train',data:[],borderColor:'var(--success)',backgroundColor:(ctx)=>getGradient(ctx, 'rgba(16, 185, 129, 0.15)', 'rgba(16, 185, 129, 0)'),borderWidth:2,pointRadius:0,pointHoverRadius:6,fill:true,tension:.4}]},options:opts()});
+const pplChart=new Chart(document.getElementById('pplChart'),{type:'line',data:{labels:[],datasets:[{label:'Perplexity',data:[],borderColor:'var(--accent)',backgroundColor:(ctx)=>getGradient(ctx, 'rgba(59, 130, 246, 0.15)', 'rgba(59, 130, 246, 0)'),borderWidth:2,pointRadius:0,pointHoverRadius:6,fill:true,tension:.4}]},options:opts()});
+const lrChart=new Chart(document.getElementById('lrChart'),{type:'line',data:{labels:[],datasets:[{label:'Learning Rate',data:[],borderColor:'var(--warning)',backgroundColor:(ctx)=>getGradient(ctx, 'rgba(217, 119, 6, 0.15)', 'rgba(217, 119, 6, 0)'),borderWidth:2,pointRadius:0,pointHoverRadius:6,fill:true,tension:.4}]},options:opts()});
+const gradChart=new Chart(document.getElementById('gradChart'),{type:'line',data:{labels:[],datasets:[{label:'Grad Norm',data:[],borderColor:'#a855f7',backgroundColor:(ctx)=>getGradient(ctx, 'rgba(168, 85, 247, 0.15)', 'rgba(168, 85, 247, 0)'),borderWidth:2,pointRadius:0,pointHoverRadius:6,fill:true,tension:.4}]},options:opts()});
 
 let hData=null, hTokens=null, heatmapInitialized=false;
+function getChartColors() {
+  const rs = getComputedStyle(document.body);
+  return { G: rs.getPropertyValue('--chart-grid').trim(), TK: rs.getPropertyValue('--chart-tick').trim() };
+}
 function drawHeatmap(){
   if(!hData || !hTokens) return;
-  const trace = { z: [...hData].reverse(), x: hTokens, y: [...hTokens].reverse(), type: 'heatmap', colorscale: [[0, '#000000'], [0.5, '#333333'], [1, '#ffffff']], xgap: 1, ygap: 1, hoverongaps: false, showscale: false };
-  const layout = { uirevision: 'true', margin: {l: 80, r: 20, b: 80, t: 20}, paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', hoverlabel: { bgcolor: '#111', font: { family: 'JetBrains Mono', color: '#fff' } }, xaxis: { tickfont: {color: TK, size: 9, family: 'JetBrains Mono'}, tickangle: -45, gridcolor: G, zeroline: false }, yaxis: { tickfont: {color: TK, size: 9, family: 'JetBrains Mono'}, gridcolor: G, zeroline: false } };
+  const c = getChartColors();
+  const trace = { z: [...hData].reverse(), x: hTokens, y: [...hTokens].reverse(), type: 'heatmap', colorscale: [[0, document.body.getAttribute('data-theme')==='cloud'?'#ffffff':'#000000'], [0.5, '#777777'], [1, document.body.getAttribute('data-theme')==='cloud'?'#000000':'#ffffff']], xgap: 1, ygap: 1, hoverongaps: false, showscale: false };
+  const layout = { uirevision: 'true', margin: {l: 80, r: 20, b: 80, t: 20}, paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', hoverlabel: { bgcolor: 'var(--surface2)', font: { family: 'JetBrains Mono', color: 'var(--text-hi)' } }, xaxis: { tickfont: {color: c.TK, size: 9, family: 'JetBrains Mono'}, tickangle: -45, gridcolor: c.G, zeroline: false }, yaxis: { tickfont: {color: c.TK, size: 9, family: 'JetBrains Mono'}, gridcolor: c.G, zeroline: false } };
   if(!heatmapInitialized){ Plotly.newPlot('heatmapCanvas', [trace], layout, {displayModeBar: false}); heatmapInitialized = true; } else { Plotly.react('heatmapCanvas', [trace], layout); }
 }
 
@@ -343,12 +459,12 @@ function drawEmbeddings(){
   if(!eNodes || eNodes.length === 0) return;
   const x=[], y=[], z=[], text=[];
   for(const n of eNodes){ x.push(n.x); y.push(n.y); z.push(n.z); text.push(n.word); }
-  const traceNodes = { x, y, z, mode: 'markers+text', type: 'scatter3d', text, textposition: 'top center', marker: {size: 3, color: '#fff', opacity: 0.8}, textfont: {color: '#737373', size: 9, family: 'JetBrains Mono'}, hoverinfo: 'text' };
+  const traceNodes = { x, y, z, mode: 'markers+text', type: 'scatter3d', text, textposition: 'top center', marker: {size: 3, color: document.body.getAttribute('data-theme')==='cloud'?'#2196f3':'#fff', opacity: 0.8}, textfont: {color: '#777777', size: 9, family: 'JetBrains Mono'}, hoverinfo: 'text' };
   const edgeX=[], edgeY=[], edgeZ=[];
   for(const [i,j] of eEdges){
     if(eNodes[i] && eNodes[j]){ edgeX.push(eNodes[i].x, eNodes[j].x, null); edgeY.push(eNodes[i].y, eNodes[j].y, null); edgeZ.push(eNodes[i].z, eNodes[j].z, null); }
   }
-  const traceEdges = { x: edgeX, y: edgeY, z: edgeZ, mode: 'lines', type: 'scatter3d', line: {color: 'rgba(255,255,255,0.1)', width: 1}, hoverinfo: 'none' };
+  const traceEdges = { x: edgeX, y: edgeY, z: edgeZ, mode: 'lines', type: 'scatter3d', line: {color: document.body.getAttribute('data-theme')==='cloud'?'rgba(0,0,0,0.1)':'rgba(255,255,255,0.1)', width: 1}, hoverinfo: 'none' };
   const layout = { uirevision: 'true', margin: {l: 0, r: 0, b: 0, t: 0}, paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', scene: { xaxis: {showgrid: false, zeroline: false, showticklabels: false}, yaxis: {showgrid: false, zeroline: false, showticklabels: false}, zaxis: {showgrid: false, zeroline: false, showticklabels: false} }, showlegend: false };
   if(!plotlyInitialized){ Plotly.newPlot('embeddingCanvas', [traceEdges, traceNodes], layout, {displayModeBar: false}); plotlyInitialized = true; } else { Plotly.react('embeddingCanvas', [traceEdges, traceNodes], layout); }
 }
@@ -459,8 +575,8 @@ async function poll(){
     updateEstimates(m);
     evaluateSelfFineTune(m);
 
-    if(m.trainLosses&&m.trainLosses.length>pT){const raw=m.trainLosses.slice(pT),sm=m.smoothedLoss?.slice(pT)||[];raw.forEach((v,i)=>{lossChart.data.labels.push(pT+i+1);lossChart.data.datasets[0].data.push(v);lossChart.data.datasets[1].data.push(sm[i]??v)});pT=m.trainLosses.length;if(m.valLosses){const vd=lossChart.data.datasets[2];vd.data=[];m.valLosses.forEach((v,i)=>vd.data.push({x:(i+1)*(m.totalBatches||1),y:v}));}trim(lossChart,600);lossChart.update('none');}
-    if(m.trainAccuracies&&m.trainAccuracies.length>pA){m.trainAccuracies.slice(pA).forEach((v,i)=>{accChart.data.labels.push(pA+i+1);accChart.data.datasets[0].data.push(v)});pA=m.trainAccuracies.length;if(m.epochValAccuracies){const vd=accChart.data.datasets[1];vd.data=[];m.epochValAccuracies.forEach((v,i)=>vd.data.push({x:(i+1)*(m.totalBatches||1),y:v}));}trim(accChart,600);accChart.update('none');}
+    if(m.trainLosses&&m.trainLosses.length>pT){const raw=m.trainLosses.slice(pT),sm=m.smoothedLoss?.slice(pT)||[];raw.forEach((v,i)=>{lossChart.data.labels.push(pT+i+1);lossChart.data.datasets[0].data.push(v);lossChart.data.datasets[1].data.push(sm[i]??v)});pT=m.trainLosses.length;trim(lossChart,600);lossChart.update('none');}
+    if(m.trainAccuracies&&m.trainAccuracies.length>pA){m.trainAccuracies.slice(pA).forEach((v,i)=>{accChart.data.labels.push(pA+i+1);accChart.data.datasets[0].data.push(v)});pA=m.trainAccuracies.length;trim(accChart,600);accChart.update('none');}
     if(m.learningRates&&m.learningRates.length>pL){m.learningRates.slice(pL).forEach((v,i)=>{lrChart.data.labels.push(pL+i+1);lrChart.data.datasets[0].data.push(v)});pL=m.learningRates.length;trim(lrChart,600);lrChart.update('none');}
     if(m.gradNorms&&m.gradNorms.length>pG){m.gradNorms.slice(pG).forEach((v,i)=>{gradChart.data.labels.push(pG+i+1);gradChart.data.datasets[0].data.push(v)});pG=m.gradNorms.length;trim(gradChart,600);gradChart.update('none');}
     if(m.perplexities?.length){pplChart.data.labels=m.perplexities.map((_,i)=>`E${i+1}`);pplChart.data.datasets[0].data=[...m.perplexities];pplChart.update('none');}
@@ -534,8 +650,9 @@ function drawExplorerHeatmap(){
   const eIdx=li*nHeads+hi;
   const ent=cachedHeadEntropies[eIdx];
   document.getElementById('attnEntropyLabel').textContent=ent!=null?`Entropy: ${ent.toFixed(3)}`:'Entropy: –';
-  const trace={z:[...data].reverse(),x:hTokens,y:[...hTokens].reverse(),type:'heatmap',colorscale:[[0,'#000000'],[0.3,'#1a1a1a'],[0.6,'#555555'],[1,'#ffffff']],xgap:1,ygap:1,showscale:true,colorbar:{tickfont:{color:TK,size:9},len:0.5}};
-  const layout={uirevision:'explorer',margin:{l:80,r:60,b:80,t:20},paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',xaxis:{tickfont:{color:TK,size:9,family:'IBM Plex Mono'},tickangle:-45,gridcolor:G,zeroline:false},yaxis:{tickfont:{color:TK,size:9,family:'IBM Plex Mono'},gridcolor:G,zeroline:false}};
+  const c = getChartColors();
+  const trace={z:[...data].reverse(),x:hTokens,y:[...hTokens].reverse(),type:'heatmap',colorscale:[[0,document.body.getAttribute('data-theme')==='cloud'?'#ffffff':'#000000'],[0.3,document.body.getAttribute('data-theme')==='cloud'?'#e0e0e0':'#1a1a1a'],[0.6,document.body.getAttribute('data-theme')==='cloud'?'#aaaaaa':'#555555'],[1,document.body.getAttribute('data-theme')==='cloud'?'#2196f3':'#ffffff']],xgap:1,ygap:1,showscale:true,colorbar:{tickfont:{color:c.TK,size:9},len:0.5}};
+  const layout={uirevision:'explorer',margin:{l:80,r:60,b:80,t:20},paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',xaxis:{tickfont:{color:c.TK,size:9,family:'IBM Plex Mono'},tickangle:-45,gridcolor:c.G,zeroline:false},yaxis:{tickfont:{color:c.TK,size:9,family:'IBM Plex Mono'},gridcolor:c.G,zeroline:false}};
   if(!explorerInit){Plotly.newPlot('explorerHeatmap',[trace],layout,{displayModeBar:false});explorerInit=true;}else{Plotly.react('explorerHeatmap',[trace],layout);}
 }
 function renderEntropyBars(m){
@@ -553,6 +670,31 @@ function renderEntropyBars(m){
     html+=`</div>`;
   });
   document.getElementById('entropyBars').innerHTML=html;
+}
+
+function setTheme(theme) {
+  document.body.setAttribute('data-theme', theme);
+  document.querySelectorAll('.theme-option').forEach(el => el.classList.remove('active'));
+  document.getElementById('theme-' + theme).classList.add('active');
+  
+  // Re-apply options for charts to pick up CSS variable changes
+  const newOpts = opts();
+  [lossChart, accChart, pplChart, lrChart, gradChart].forEach(c => {
+    c.options = newOpts;
+    c.update('none');
+  });
+  
+  drawHeatmap();
+  drawExplorerHeatmap();
+  drawEmbeddings();
+  
+  localStorage.setItem('transformer-theme', theme);
+}
+
+// Load saved theme on startup
+const savedTheme = localStorage.getItem('transformer-theme');
+if (savedTheme) {
+  setTheme(savedTheme);
 }
 
 setInterval(poll,2000);poll();

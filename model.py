@@ -2,9 +2,18 @@ import torch
 import torch.nn as nn
 import math
 
+from logging_config import get_logger
+
+logger = get_logger(__name__)
+
+
 class Inputs(nn.Module):
   def __init__(self, dModel: int, vocabSize: int): #d_model = 512
     super().__init__()
+    if dModel <= 0:
+      raise ValueError(f"dModel must be positive, got {dModel}")
+    if vocabSize <= 0:
+      raise ValueError(f"vocabSize must be positive, got {vocabSize}")
     self.dModel = dModel
     self.vocabSize = vocabSize
     self.embedding = nn.Embedding(vocabSize, dModel)
@@ -16,6 +25,8 @@ class PositionalEncoding(nn.Module):
 
   def __init__(self, dModel: int, sequenceLength: int, dropout: float) -> None:
     super().__init__()
+    if sequenceLength <= 0:
+      raise ValueError(f"sequenceLength must be positive, got {sequenceLength}")
     self.dModel = dModel
     self.sequenceLength = sequenceLength
     self.dropout = nn.Dropout(dropout)
@@ -33,6 +44,12 @@ class PositionalEncoding(nn.Module):
 
 
   def forward(self, x):
+    if x.shape[1] > self.sequenceLength:
+      raise ValueError(
+        f"Input sequence length ({x.shape[1]}) exceeds max "
+        f"positional encoding length ({self.sequenceLength}). "
+        f"Truncate input or increase seqLength in config."
+      )
     x = x + (self.pe[:, :x.shape[1]]).requires_grad_(False)
     return self.dropout(x)
 
@@ -201,7 +218,45 @@ class TransformerBlock(nn.Module):
     return self.projectLayer(x)
 
 def buildTransformer(source_vocabSize: int, target_vocabSize: int, source_sequenceLength: int, target_sequenceLength: int, N: int = 6, dModel: int = 512, dFF: int = 2048, h: int = 8, dropout: float = 0.1) -> TransformerBlock:
-    
+    """
+    Constructs a Transformer model with the given hyperparameters.
+
+    Args:
+        source_vocabSize: Size of the source vocabulary.
+        target_vocabSize: Size of the target vocabulary.
+        source_sequenceLength: Maximum source sequence length.
+        target_sequenceLength: Maximum target sequence length.
+        N: Number of encoder/decoder layers.
+        dModel: Model embedding dimension.
+        dFF: Feed-forward hidden dimension.
+        h: Number of attention heads.
+        dropout: Dropout probability.
+
+    Returns:
+        TransformerBlock: The constructed model.
+
+    Raises:
+        ValueError: If hyperparameters are invalid.
+    """
+    # ── Validate hyperparameters ──────────────────────────────────────────
+    if dModel % h != 0:
+        raise ValueError(
+            f"dModel ({dModel}) must be divisible by h ({h}). "
+            f"Got remainder {dModel % h}."
+        )
+    if source_vocabSize <= 0 or target_vocabSize <= 0:
+        raise ValueError(
+            f"Vocab sizes must be positive. Got source={source_vocabSize}, "
+            f"target={target_vocabSize}."
+        )
+
+    logger.info(
+        f"Building Transformer: N={N}, dModel={dModel}, dFF={dFF}, "
+        f"h={h}, dropout={dropout}, src_vocab={source_vocabSize}, "
+        f"tgt_vocab={target_vocabSize}, src_seq={source_sequenceLength}, "
+        f"tgt_seq={target_sequenceLength}"
+    )
+
     # Create the source and target embeddings
     sourceEmbed = Inputs(dModel, source_vocabSize)
     targetEmbed = Inputs(dModel, target_vocabSize)
@@ -253,6 +308,9 @@ def buildTransformer(source_vocabSize: int, target_vocabSize: int, source_sequen
     for name, p in transformer.named_parameters():
         if name.endswith('w_o.weight') or name.endswith('linearTwo.weight'):
             nn.init.normal_(p, mean=0.0, std=residualScale)
+
+    paramCount = sum(p.numel() for p in transformer.parameters())
+    logger.info(f"Transformer built: {paramCount:,} parameters")
 
     return transformer
         

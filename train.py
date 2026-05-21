@@ -9,17 +9,24 @@ import math
 import os
 import json
 import time
+import sys
 try:
     import psutil
 except ImportError:
     psutil = None
-import resource
+try:
+    import resource
+except ImportError:
+    resource = None
 from torch.utils.data import Dataset, DataLoader
 
+from logging_config import setup_logging, get_logger
 from model import buildTransformer
 from tokenizer import WordTokenizer, tokenize, loadWikipediaDataset, loadClaudeOpusDataset, extractTextsForVocab
-from config import MODEL, TRAINING, DATA, PATHS, RESUME, DASHBOARD
+from config import MODEL, TRAINING, DATA, PATHS, RESUME, DASHBOARD, validate_config
 from autotuner import ActiveConfigMatcher
+
+logger = get_logger(__name__)
 
 # Flatten config for easy access
 CONFIG = {
@@ -298,8 +305,10 @@ def trainOneEpoch(model, dataloader, optimizer, criterion, device, tokenizer, me
         if (batchIdx + 1) % CONFIG["logInterval"] == 0 or batchIdx == batchCount - 1:
             if psutil:
                 mem = psutil.Process().memory_info().rss / (1024**3)
-            else:
+            elif resource:
                 mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**3)  # bytes → GB on macOS
+            else:
+                mem = 0.0
 
             captureAttention(model, enc_input, dec_input, tokenizer, metrics)
             capturePredictions(projOut, enc_input, label, tokenizer, metrics)
@@ -483,161 +492,197 @@ def captureEmbeddings(model, tokenizer, metrics, numWords=80, kNeighbors=3):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
-    print("=" * 60)
-    print("  🧠 TRANSFORMER TRAINING")
-    print("=" * 60)
+    # ── Initialize structured logging ─────────────────────────────────────
+    setup_logging()
+
+    logger.info("=" * 60)
+    logger.info("  🧠 TRANSFORMER TRAINING")
+    logger.info("=" * 60)
+
+    # ── Validate configuration before anything else ───────────────────────
+    try:
+        config_warnings = validate_config()
+        for w in config_warnings:
+            logger.warning(f"Config warning: {w}")
+    except ValueError as e:
+        logger.error(f"Invalid configuration: {e}")
+        sys.exit(1)
 
     # Device selection: MPS (Apple Silicon) > CUDA (NVIDIA) > CPU
     if torch.backends.mps.is_available():
         device = torch.device("mps")
-        print("  Device: Apple Silicon GPU (MPS)")
+        logger.info("Device: Apple Silicon GPU (MPS)")
     elif torch.cuda.is_available():
         device = torch.device("cuda")
-        print("  Device: NVIDIA GPU (CUDA)")
+        logger.info("Device: NVIDIA GPU (CUDA)")
     else:
         device = torch.device("cpu")
-        print("  Device: CPU (training will be slow)")
+        logger.warning("Device: CPU (training will be slow)")
 
-    # Load tokenizer
-    print(f"\n  Loading tokenizer from {CONFIG['vocabPath']}...")
-    tokenizer = WordTokenizer.load(CONFIG["vocabPath"])
+    metrics = None  # declare early so crash handler can access it
 
-    # Run tokenizer self-check before training starts
-    tokenizer.selfCheck()
+    try:
+        # Load tokenizer
+        logger.info(f"Loading tokenizer from {CONFIG['vocabPath']}...")
+        if not os.path.exists(CONFIG["vocabPath"]):
+            logger.error(f"Vocab file not found: {CONFIG['vocabPath']}. Run 'python3 tokenizer.py' first.")
+            sys.exit(1)
+        tokenizer = WordTokenizer.load(CONFIG["vocabPath"])
 
-    # Load data
-    print(f"\n  Data source: {DATA['source']}")
-    if DATA["source"] == "claude-opus":
-        print(f"  Loading {CONFIG['numArticles']:,} rows from DPO dataset...")
-        texts = loadClaudeOpusDataset(datasetName=DATA["claudeDataset"], numRows=CONFIG["numArticles"])
-    else:
-        print(f"  Loading {CONFIG['numArticles']:,} Wikipedia articles...")
-        texts = loadWikipediaDataset(numArticles=CONFIG["numArticles"])
+        # Run tokenizer self-check before training starts
+        tokenizer.selfCheck()
 
-    # Train/val split
-    splitIdx = int(len(texts) * (1 - CONFIG["valSplit"]))
-    trainTexts, valTexts = texts[:splitIdx], texts[splitIdx:]
-    print(f"  Train samples: {len(trainTexts):,}")
-    print(f"  Val samples:   {len(valTexts):,}")
+        # Load data
+        logger.info(f"Data source: {DATA['source']}")
+        if DATA["source"] == "claude-opus":
+            logger.info(f"Loading {CONFIG['numArticles']:,} rows from DPO dataset...")
+            texts = loadClaudeOpusDataset(datasetName=DATA["claudeDataset"], numRows=CONFIG["numArticles"])
+        else:
+            logger.info(f"Loading {CONFIG['numArticles']:,} Wikipedia articles...")
+            texts = loadWikipediaDataset(numArticles=CONFIG["numArticles"])
 
-    # Build datasets and dataloaders
-    print(f"\n  Building training dataset...")
-    trainDataset = TransformerDataset(trainTexts, tokenizer, CONFIG["seqLength"])
-    valDataset = TransformerDataset(valTexts, tokenizer, CONFIG["seqLength"])
+        if not texts:
+            logger.error("No training data loaded. Check data source configuration.")
+            sys.exit(1)
 
-    trainLoader = DataLoader(trainDataset, batch_size=CONFIG["batchSize"], shuffle=True, drop_last=True)
-    valLoader = DataLoader(valDataset, batch_size=CONFIG["batchSize"], shuffle=False, drop_last=True)
+        # Train/val split
+        splitIdx = int(len(texts) * (1 - CONFIG["valSplit"]))
+        trainTexts, valTexts = texts[:splitIdx], texts[splitIdx:]
+        logger.info(f"Train samples: {len(trainTexts):,}")
+        logger.info(f"Val samples:   {len(valTexts):,}")
 
-    # Build model
-    print(f"\n  Building Transformer model...")
-    model = buildTransformer(
-        source_vocabSize=tokenizer.vocabSize,
-        target_vocabSize=tokenizer.vocabSize,
-        source_sequenceLength=CONFIG["seqLength"],
-        target_sequenceLength=CONFIG["seqLength"],
-        N=CONFIG["N"],
-        dModel=CONFIG["dModel"],
-        dFF=CONFIG["dFF"],
-        h=CONFIG["h"],
-        dropout=CONFIG["dropout"],
-    ).to(device)
+        if len(trainTexts) == 0:
+            logger.error("No training samples after split. Increase numArticles or decrease valSplit.")
+            sys.exit(1)
 
-    paramCount = sum(p.numel() for p in model.parameters())
-    print(f"  Model parameters: {paramCount:,}")
+        # Build datasets and dataloaders
+        logger.info("Building training dataset...")
+        trainDataset = TransformerDataset(trainTexts, tokenizer, CONFIG["seqLength"])
+        valDataset = TransformerDataset(valTexts, tokenizer, CONFIG["seqLength"])
 
-    CONFIG["totalSteps"] = len(trainLoader) * CONFIG["epochs"]
-    print(f"  Total training steps: {CONFIG['totalSteps']:,}")
+        if len(trainDataset) == 0:
+            logger.error("Dataset produced 0 training samples. Check data format and seqLength.")
+            sys.exit(1)
 
-    # Optimizer and loss
-    optimizer = torch.optim.Adam(model.parameters(), lr=CONFIG["maxLR"], betas=(0.9, 0.98), eps=1e-9)
-    criterion = nn.CrossEntropyLoss(ignore_index=PAD_ID, label_smoothing=CONFIG["labelSmoothing"])
+        trainLoader = DataLoader(trainDataset, batch_size=CONFIG["batchSize"], shuffle=True, drop_last=True)
+        valLoader = DataLoader(valDataset, batch_size=CONFIG["batchSize"], shuffle=False, drop_last=True)
 
-    # Resume from checkpoint if available
-    startEpoch = 0
-    bestValLoss = float("inf")
-    if RESUME["enabled"] and os.path.exists(CONFIG["checkpointPath"]):
-        print(f"\n  📂 Found checkpoint: {CONFIG['checkpointPath']}")
-        checkpoint = torch.load(CONFIG["checkpointPath"], map_location=device, weights_only=True)
-        try:
-            model.load_state_dict(checkpoint["model_state_dict"])
-            if RESUME["loadOptimizer"]:
-                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-                print("  Loaded optimizer state (full resume)")
-            else:
-                print("  Fresh optimizer (fine-tune mode)")
-            startEpoch = checkpoint.get("epoch", 0) + 1
-            bestValLoss = checkpoint.get("val_loss", float("inf"))
-            print(f"  Resuming from epoch {startEpoch} (best val_loss={bestValLoss:.4f})")
-        except RuntimeError as e:
-            print(f"  ⚠️  Checkpoint architecture mismatch. Ignoring checkpoint and starting fresh.")
-            print(f"  🆕 Training from scratch.")
-    else:
-        print(f"\n  🆕 Training from scratch.")
+        # Build model
+        logger.info("Building Transformer model...")
+        model = buildTransformer(
+            source_vocabSize=tokenizer.vocabSize,
+            target_vocabSize=tokenizer.vocabSize,
+            source_sequenceLength=CONFIG["seqLength"],
+            target_sequenceLength=CONFIG["seqLength"],
+            N=CONFIG["N"],
+            dModel=CONFIG["dModel"],
+            dFF=CONFIG["dFF"],
+            h=CONFIG["h"],
+            dropout=CONFIG["dropout"],
+        ).to(device)
 
-    # Metrics (dashboard reads metrics.json from a separate process)
-    metrics = MetricsTracker(CONFIG, CONFIG["metricsPath"])
-    metrics.update(modelParams=paramCount)
-    metrics.save()
-    print(f"\n  📊 Run 'python3 dashboard.py' in another terminal for live stats.")
+        paramCount = sum(p.numel() for p in model.parameters())
+        logger.info(f"Model parameters: {paramCount:,}")
 
-    # ── Active Configuration Matcher (auto-tuner) ─────────────────────────
-    tuner = ActiveConfigMatcher(CONFIG, metrics, enabled=True)
-    print(f"  🔧 Auto-tuner enabled (monitoring gradients, loss, accuracy)")
+        CONFIG["totalSteps"] = len(trainLoader) * CONFIG["epochs"]
+        logger.info(f"Total training steps: {CONFIG['totalSteps']:,}")
 
-    # ── Training loop ─────────────────────────────────────────────────────
-    startTime = time.time()
+        # Optimizer and loss
+        optimizer = torch.optim.Adam(model.parameters(), lr=CONFIG["maxLR"], betas=(0.9, 0.98), eps=1e-9)
+        criterion = nn.CrossEntropyLoss(ignore_index=PAD_ID, label_smoothing=CONFIG["labelSmoothing"])
 
-    for epoch in range(startEpoch, CONFIG["epochs"]):
-        print(f"\n{'─' * 60}")
-        print(f"  EPOCH {epoch + 1} / {CONFIG['epochs']}")
-        print(f"{'─' * 60}")
+        # Resume from checkpoint if available
+        startEpoch = 0
+        bestValLoss = float("inf")
+        if RESUME["enabled"] and os.path.exists(CONFIG["checkpointPath"]):
+            logger.info(f"Found checkpoint: {CONFIG['checkpointPath']}")
+            try:
+                checkpoint = torch.load(CONFIG["checkpointPath"], map_location=device, weights_only=True)
+                model.load_state_dict(checkpoint["model_state_dict"])
+                if RESUME["loadOptimizer"]:
+                    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                    logger.info("Loaded optimizer state (full resume)")
+                else:
+                    logger.info("Fresh optimizer (fine-tune mode)")
+                startEpoch = checkpoint.get("epoch", 0) + 1
+                bestValLoss = checkpoint.get("val_loss", float("inf"))
+                logger.info(f"Resuming from epoch {startEpoch} (best val_loss={bestValLoss:.4f})")
+            except (RuntimeError, KeyError) as e:
+                logger.warning(f"Checkpoint load failed ({type(e).__name__}: {e}). Training from scratch.")
+        else:
+            logger.info("Training from scratch.")
 
-        metrics.update(currentEpoch=epoch + 1, status="training")
+        # Metrics (dashboard reads metrics.json from a separate process)
+        metrics = MetricsTracker(CONFIG, CONFIG["metricsPath"])
+        metrics.update(modelParams=paramCount)
         metrics.save()
+        logger.info("Run 'python3 dashboard.py' in another terminal for live stats.")
 
-        avgTrainLoss = trainOneEpoch(model, trainLoader, optimizer, criterion, device, tokenizer, metrics, epoch, tuner=tuner)
+        # ── Active Configuration Matcher (auto-tuner) ─────────────────────
+        tuner = ActiveConfigMatcher(CONFIG, metrics, enabled=True)
+        logger.info("Auto-tuner enabled (monitoring gradients, loss, accuracy)")
 
-        metrics.update(status="validating")
+        # ── Training loop ─────────────────────────────────────────────────
+        startTime = time.time()
+
+        for epoch in range(startEpoch, CONFIG["epochs"]):
+            logger.info(f"{'─' * 60}")
+            logger.info(f"EPOCH {epoch + 1} / {CONFIG['epochs']}")
+
+            metrics.update(currentEpoch=epoch + 1, status="training")
+            metrics.save()
+
+            avgTrainLoss = trainOneEpoch(model, trainLoader, optimizer, criterion, device, tokenizer, metrics, epoch, tuner=tuner)
+
+            metrics.update(status="validating")
+            metrics.save()
+            avgValLoss = validate(model, valLoader, criterion, device, tokenizer, metrics)
+
+            perplexity = math.exp(min(avgValLoss, 20))
+            elapsed = time.time() - startTime
+
+            metrics.data["epochTrainLosses"].append(round(avgTrainLoss, 4))
+            metrics.data["valLosses"].append(round(avgValLoss, 4))
+            metrics.data["perplexities"].append(round(perplexity, 2))
+            metrics.update(elapsedSeconds=round(elapsed))
+            metrics.save()
+
+            logger.info(f"Epoch {epoch+1} Summary — Train Loss: {avgTrainLoss:.4f} | "
+                        f"Val Loss: {avgValLoss:.4f} | Perplexity: {perplexity:.2f} | "
+                        f"Elapsed: {elapsed/60:.1f} min")
+
+            if avgValLoss < bestValLoss:
+                bestValLoss = avgValLoss
+                torch.save({
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "val_loss": avgValLoss,
+                }, CONFIG["checkpointPath"])
+                logger.info(f"Best model saved! (val_loss={avgValLoss:.4f})")
+
+        # Post-training tokenizer diagnostics
+        tokenizer.diagnose()
+
+        # Auto-tuner summary
+        tuner.summary()
+
+        metrics.update(status="complete")
         metrics.save()
-        avgValLoss = validate(model, valLoader, criterion, device, tokenizer, metrics)
+        logger.info("✅ Training complete!")
+        logger.info(f"Final metrics saved to {CONFIG['metricsPath']}")
 
-        perplexity = math.exp(min(avgValLoss, 20))
-        elapsed = time.time() - startTime
-
-        metrics.data["epochTrainLosses"].append(round(avgTrainLoss, 4))
-        metrics.data["valLosses"].append(round(avgValLoss, 4))
-        metrics.data["perplexities"].append(round(perplexity, 2))
-        metrics.update(elapsedSeconds=round(elapsed))
-        metrics.save()
-
-        print(f"\n  ── Epoch {epoch+1} Summary ──")
-        print(f"     Train Loss:  {avgTrainLoss:.4f}")
-        print(f"     Val Loss:    {avgValLoss:.4f}")
-        print(f"     Perplexity:  {perplexity:.2f}")
-        print(f"     Elapsed:     {elapsed/60:.1f} min")
-
-        if avgValLoss < bestValLoss:
-            bestValLoss = avgValLoss
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_loss": avgValLoss,
-            }, CONFIG["checkpointPath"])
-            print(f"     ✅ Best model saved! (val_loss={avgValLoss:.4f})")
-
-    # Post-training tokenizer diagnostics
-    tokenizer.diagnose()
-
-    # Auto-tuner summary
-    tuner.summary()
-
-    metrics.update(status="complete")
-    metrics.save()
-    print(f"\n{'=' * 60}")
-    print(f"  ✅ Training complete!")
-    print(f"  Final metrics saved to {CONFIG['metricsPath']}")
-    print(f"{'=' * 60}")
+    except KeyboardInterrupt:
+        logger.warning("Training interrupted by user (Ctrl+C)")
+        if metrics:
+            metrics.update(status="interrupted")
+            metrics.save()
+    except Exception as e:
+        logger.error(f"Training crashed: {type(e).__name__}: {e}", exc_info=True)
+        if metrics:
+            metrics.update(status="crashed")
+            metrics.save()
+        raise
 
 
 if __name__ == "__main__":
