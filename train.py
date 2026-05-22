@@ -22,7 +22,7 @@ from torch.utils.data import Dataset, DataLoader
 
 from logging_config import setup_logging, get_logger
 from model import buildTransformer
-from tokenizer import WordTokenizer, tokenize, loadWikipediaDataset, loadClaudeOpusDataset, extractTextsForVocab
+from tokenizer import WordTokenizer, tokenize, loadDataOne, loadDatasetTwo, extractTextsForVocab
 from config import MODEL, TRAINING, DATA, PATHS, RESUME, DASHBOARD, validate_config
 from autotuner import ActiveConfigMatcher
 
@@ -229,16 +229,19 @@ def trainOneEpoch(model, dataloader, optimizer, criterion, device, tokenizer, me
     optimizer.zero_grad()  # zero once; accumulate across micro-batches
 
     for batchIdx, batch in enumerate(dataloader):
-        enc_input = batch["encoder_input"].to(device)
-        dec_input = batch["decoder_input"].to(device)
-        enc_mask = batch["encoder_mask"].to(device)
-        dec_mask = batch["decoder_mask"].to(device)
-        label = batch["label"].to(device)
+        enc_input = batch["encoder_input"].to(device, non_blocking=True)
+        dec_input = batch["decoder_input"].to(device, non_blocking=True)
+        enc_mask = batch["encoder_mask"].to(device, non_blocking=True)
+        dec_mask = batch["decoder_mask"].to(device, non_blocking=True)
+        label = batch["label"].to(device, non_blocking=True)
+
+        # Only compute the heavy attention matrices when logging for the dashboard
+        need_attention = ((batchIdx + 1) % CONFIG["logInterval"] == 0 or batchIdx == batchCount - 1)
 
         # Forward with mixed-precision autocast
         with torch.autocast(device_type=castDevice, dtype=castDtype):
-            encoderOut = model.encode(enc_input, enc_mask)
-            decoderOut = model.decode(encoderOut, enc_mask, dec_input, dec_mask)
+            encoderOut = model.encode(enc_input, enc_mask, need_weights=need_attention)
+            decoderOut = model.decode(encoderOut, enc_mask, dec_input, dec_mask, need_weights=need_attention)
             projOut = model.projection(decoderOut)
             loss = criterion(projOut.view(-1, projOut.size(-1)), label.view(-1))
             loss = loss / accumSteps  # scale loss for gradient accumulation
@@ -269,7 +272,8 @@ def trainOneEpoch(model, dataloader, optimizer, criterion, device, tokenizer, me
             predicted = projOut.argmax(dim=-1)
             nonPadMask = (label != PAD_ID)
             correct = (predicted == label) & nonPadMask
-            accuracy = correct.sum().item() / max(nonPadMask.sum().item(), 1)
+            # Compute accuracy entirely on GPU, sync once
+            accuracy = (correct.sum() / torch.clamp(nonPadMask.sum(), min=1)).item()
 
         # Track metrics (unscale loss for logging)
         batchLoss = loss.item() * accumSteps
@@ -350,14 +354,14 @@ def validate(model, dataloader, criterion, device, tokenizer, metrics):
 
     with torch.no_grad():
         for batch in dataloader:
-            enc_input = batch["encoder_input"].to(device)
-            dec_input = batch["decoder_input"].to(device)
-            enc_mask = batch["encoder_mask"].to(device)
-            dec_mask = batch["decoder_mask"].to(device)
-            label = batch["label"].to(device)
+            enc_input = batch["encoder_input"].to(device, non_blocking=True)
+            dec_input = batch["decoder_input"].to(device, non_blocking=True)
+            enc_mask = batch["encoder_mask"].to(device, non_blocking=True)
+            dec_mask = batch["decoder_mask"].to(device, non_blocking=True)
+            label = batch["label"].to(device, non_blocking=True)
 
-            encoderOut = model.encode(enc_input, enc_mask)
-            decoderOut = model.decode(encoderOut, enc_mask, dec_input, dec_mask)
+            encoderOut = model.encode(enc_input, enc_mask, need_weights=False)
+            decoderOut = model.decode(encoderOut, enc_mask, dec_input, dec_mask, need_weights=False)
             projOut = model.projection(decoderOut)
 
             loss = criterion(projOut.view(-1, projOut.size(-1)), label.view(-1))
@@ -536,10 +540,10 @@ def main():
         logger.info(f"Data source: {DATA['source']}")
         if DATA["source"] == "claude-opus":
             logger.info(f"Loading {CONFIG['numArticles']:,} rows from DPO dataset...")
-            texts = loadClaudeOpusDataset(datasetName=DATA["claudeDataset"], numRows=CONFIG["numArticles"])
+            texts = loadDatasetTwo(datasetName=DATA["claudeDataset"], numRows=CONFIG["numArticles"])
         else:
             logger.info(f"Loading {CONFIG['numArticles']:,} Wikipedia articles...")
-            texts = loadWikipediaDataset(numArticles=CONFIG["numArticles"])
+            texts = loadDataOne(numArticles=CONFIG["numArticles"])
 
         if not texts:
             logger.error("No training data loaded. Check data source configuration.")
@@ -564,8 +568,24 @@ def main():
             logger.error("Dataset produced 0 training samples. Check data format and seqLength.")
             sys.exit(1)
 
-        trainLoader = DataLoader(trainDataset, batch_size=CONFIG["batchSize"], shuffle=True, drop_last=True)
-        valLoader = DataLoader(valDataset, batch_size=CONFIG["batchSize"], shuffle=False, drop_last=True)
+        # pin_memory is only supported on CUDA; MPS ignores it and emits a warning
+        _pin_memory = (device.type == "cuda")
+        trainLoader = DataLoader(
+            trainDataset, 
+            batch_size=CONFIG["batchSize"], 
+            shuffle=True, 
+            drop_last=True,
+            num_workers=2,
+            pin_memory=_pin_memory
+        )
+        valLoader = DataLoader(
+            valDataset, 
+            batch_size=CONFIG["batchSize"], 
+            shuffle=False, 
+            drop_last=True,
+            num_workers=2,
+            pin_memory=_pin_memory
+        )
 
         # Build model
         logger.info("Building Transformer model...")
